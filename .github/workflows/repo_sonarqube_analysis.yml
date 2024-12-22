@@ -1,0 +1,53 @@
+name: Repo SonarQube Analysis
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  sonarqube-scan:
+    runs-on: default
+    environment:
+      name: 'cloudflare_development'
+
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          fetch-depth: 0  # Shallow clones should be disabled for a better relevancy of analysis
+
+      - name: Retrieve Sonarqube credentials
+        uses: hashicorp/vault-action@v3.0.0
+        with:
+          method: jwt
+          path: jwt_github-repository
+          url: ${{ vars.VAULT_URL }}
+          role: default
+          secrets: |
+            ${{ vars.VAULT_NAMESPACE }}/${{ vars.VAULT_SONARQUBE_PATH }} sonarqube_token | SONAR_TOKEN;
+            ${{ vars.VAULT_NAMESPACE }}/${{ vars.VAULT_SONARQUBE_PATH }} sonarqube_host_url | SONAR_HOST_URL;
+            ${{ vars.VAULT_NAMESPACE }}/${{ vars.VAULT_ARTIFACTORY_PATH }}  akamai_artifactory_service_username | DOCKER_USERNAME;
+            ${{ vars.VAULT_NAMESPACE }}/${{ vars.VAULT_ARTIFACTORY_PATH }}  akamai_artifactory_service_password | DOCKER_PASSWORD;
+            
+      - name: Install python dependencies
+        run: |
+          pip install -r docker/requirements/pypkgs.txt
+          pip install cbacert --index-url="https://$DOCKER_USERNAME:$DOCKER_PASSWORD@artifactory.internal.cba/artifactory/api/pypi/cloudservices-cert-management-engineering-pypi/simple" --no-build-isolation
+        
+      - name: Run code coverage
+        run: |
+          python -m coverage run -m pytest --ignore=testing
+          python -m coverage xml
+
+        # Versions 4 and up require external connectivity
+      - uses: sonarsource/sonarqube-scan-action@v3.1.0
+        env:
+          SONAR_TOKEN: ${{ env.SONAR_TOKEN }}
+          SONAR_ROOT_CERT: ${{ vars.SONAR_ROOT_CERT }}
+          SONAR_HOST_URL: ${{ env.SONAR_HOST_URL }}
