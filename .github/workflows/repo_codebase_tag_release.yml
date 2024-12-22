@@ -1,0 +1,41 @@
+name: Repo Codebase Tag and Release
+
+# Controls when the workflow will run
+on:
+  # Triggers the workflow on push to the "main" branch
+  push:
+    branches:
+      - main
+
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# A workflow run is made up of one or more jobs that can run sequentially or in parallel
+jobs:
+  create-tag-and-release:
+    runs-on: default
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v4
+
+      - name: Record current time as version number
+        run: echo "VERSION=$(TZ=Australia/Sydney date +'%Y%m%d.%H%M%S')" >> $GITHUB_ENV
+
+      - name: Create tag using current timestamp as version
+        run: git tag v${{ env.VERSION }}
+
+      - name: Push tag to GitHub
+        run: git push origin v$VERSION
+
+      - name: Install GitHub CLI
+        run: |
+          sudo apt update
+          sudo apt install gh
+
+      - name: Create release
+        run: |
+          gh auth login --with-token <<< "${{ secrets.GITHUB_TOKEN }}"
+          gh release create v${{ env.VERSION }} --title "v${{ env.VERSION }}" --notes "Automated release from ${{ github.ref_name }} @ ${{ github.event_name }} event"
