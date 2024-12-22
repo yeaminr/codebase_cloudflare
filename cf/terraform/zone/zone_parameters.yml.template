@@ -1,0 +1,3 @@
+# yaml-language-server: $schema=../../../schema/zone_parameters_schema.yml
+
+fqdn: dev.poc.com.au
