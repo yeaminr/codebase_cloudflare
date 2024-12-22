@@ -1,0 +1,198 @@
+# yaml-language-server: $schema=../../../schema/security_parameters_schema.yml
+
+waf_managed_ruleset: 
+  exceptions:
+     description: "WAF Bypass"
+     enabled: true
+     action: "skip"
+     expression: "(ip.src in $group_wide_whitelist) or (ip.src in $policy_name_rate_control_bypass_list)"
+  rules: 
+  -  description: "Exposed credentials check rules"
+     enabled: true
+     action: "execute"
+     expression: "true"
+     action_parameters:
+        id: "c2e184081120413c86c3ab7e14069605"
+        version: "latest"
+     overrides:
+       enabled: true
+       action: "log"
+       rules: []
+
+  -  description: "Cloudflare OWASP Core Ruleset"
+     enabled: true
+     action: "execute"
+     expression: "true"
+     action_parameters:
+        id: "4814384a9e5d4991b9815dcfc25d2f1f"
+        version: "latest"
+     overrides: 
+       enabled: false
+       action: "log"
+       rules: []
+
+  - description: "Cloudflare Managed Ruleset"
+    enabled: true
+    action: "execute"
+    expression: "true"
+    action_parameters:
+       id: "efb7b8c949ac4650a09736fc376e9aee"
+       version: "latest"
+    overrides:
+      #enabled: true
+      action: "block"
+      rules:
+        - rule_id: "8e361ee4328f4a3caf6caf3e664ed6fe"
+          action: "block"
+          enabled: true
+
+waf_custom_ruleset:
+  rules: 
+     # Order 2
+  -  description: "RUDY Attacks"
+     enabled: true
+     action: "block"
+     expression: "(http.request.method eq \"POST\" and http.request.uri.path matches r\"(comment|conversation|event|poll)/create\" and http.cookie matches r\"auth_session=[0-9a-zA-Z]{32}-[0-9]{10}-[0-9a-z]{6}\")"
+
+     # Order 3
+  -  description: "Content Scan"
+     enabled: true
+     action: "log"
+     expression: "(cf.waf.content_scan.has_malicious_obj)"
+
+     # Order 4
+  -  description: "IP Reputation - Threat Scoring"
+     enabled: true
+     action: "log"
+     expression: "(cf.threat_score eq 10)"
+
+     # Order 5
+  -  description: "IP Reputation - CF Managed IP Lists - Log"
+     enabled: true
+     action: "log"
+     expression: "(ip.src in $cf.anonymizer) or (ip.src in $cf.botnetcc) or (ip.src in $cf.malware) or (ip.src in $cf.open_proxies) or (ip.src in $cf.vpn and cf.threat_score gt 0 and cf.threat_score le 25)"
+
+     # Order 6
+  -  description: "IP Reputation - CF Managed IP Lists - Challenge"
+     enabled: true
+     action: "managed_challenge"
+     expression: "(ip.src in $cf.botnetcc) or (ip.src in $cf.malware) or (cf.threat_score gt 25 and cf.threat_score le 50)"
+
+     # Order 7
+  -  description: "IP Reputation - CF Managed IP Lists - Block"
+     enabled: true
+     action: "block"
+     expression: "(ip.src in $cf.botnetcc) or (ip.src in $cf.malware) or (cf.threat_score gt 50 and cf.threat_score le 100 and not ip.geoip.country in {\"AU\"})"
+
+     # Order 8
+  -  description: "WAF Attack Scoring - Log"
+     enabled: true
+     action: "log"
+     expression: "(cf.waf.score ge 50)"
+
+     # Order 9
+  -  description: "WAF Attack Scoring - Challenge"
+     enabled: true
+     action: "managed_challenge"
+     expression: "(cf.waf.score gt 20 and cf.waf.score le 50)"
+
+     # Order 10
+  -  description: "WAF Attack Scoring - Block"
+     enabled: true
+     action: "block"
+     expression: "(cf.waf.score gt 0 and cf.waf.score le 20)"
+
+     # Order 11
+  -  description: "Geo Location Block"
+     enabled: true
+     action: "block"
+     expression: "(ip.geoip.country in {\"IR\" \"KP\" \"SY\" \"CU\"} or ip.geoip.subdivision_1_iso_code eq \"UA-14\" or ip.geoip.subdivision_1_iso_code eq \"UA-09\" or ip.geoip.subdivision_1_iso_code eq \"UA-43\")"
+
+     # Order 12
+  -  description: "Groupwide Blacklist"
+     enabled: true
+     action: "block"
+     expression: "(ip.src in $group_wide_blacklist)"
+
+     # Order 13
+  -  description: "Deny POST without Content-Length header"
+     enabled: true
+     action: "block"
+     expression: "(http.request.method eq \"POST\" and http.request.body.size ge 10000)"
+
+     # Order 15
+  -  description: "Verified Bot Categories"
+     enabled: true
+     action: "log"
+     expression: "(cf.verified_bot_category in {\"Search Engine Crawler\" \"Search Engine Optimization\" \"Monitoring & Analytics\" \"Advertising & Marketing\" \"Page Preview\" \"Academic Research\" \"Security\" \"Accessibility\" \"Webhooks\" \"Feed Fetcher\" \"AI Crawler\" \"Aggregator\" \"AI Assistant\" \"AI Search\" \"Archiver\" \"Other\"})"
+
+     # Order 16
+  -  description: "NON-Verified Bot Categories - Log"
+     enabled: true
+     action: "log"
+     expression: "(http.request.uri.path in {\"/login\" \"/Business/login\" \"/secure/login\" \"/secure/api/login\" \"/netbank/Logon/Logon.aspx\" \"/Net/Documentum/Login.aspx\"} and not cf.verified_bot_category in {\"Search Engine Crawler\" \"Search Engine Optimization\" \"Monitoring & Analytics\" \"Advertising & Marketing\" \"Page Preview\" \"Academic Research\" \"Security\" \"Accessibility\" \"Webhooks\" \"Feed Fetcher\" \"AI Crawler\" \"Aggregator\" \"AI Assistant\" \"Other\" \"AI Search\"} and cf.bot_management.score ge 30)"
+
+     # Order 17
+  -  description: "NON-Verified Bot Categories - Block"
+     enabled: true
+     action: "block"
+     expression: "(http.request.uri.path in {\"/login\" \"/Business/login\" \"/secure/login\" \"/secure/api/login\" \"/netbank/Logon/Logon.aspx\" \"/Net/Documentum/Login.aspx\"} and not cf.verified_bot_category in {\"Search Engine Crawler\" \"Search Engine Optimization\" \"Monitoring & Analytics\" \"Advertising & Marketing\" \"Page Preview\" \"Academic Research\" \"Security\" \"Accessibility\" \"Webhooks\" \"Feed Fetcher\" \"AI Crawler\" \"Aggregator\" \"AI Assistant\" \"Other\" \"AI Search\"} and cf.bot_management.score gt 0 and cf.bot_management.score lt 30)"
+
+     # Order 18
+  -  description: "Groupwide Whitelist"
+     enabled: false
+     action: "log"
+     expression: "(ip.src in $group_wide_whitelist)"
+
+waf_rate_limiting_ruleset:
+  rules: 
+  -  description: "Brute Force or Credential Stuffing attacks"
+     enabled: true
+     action: "log"
+     period: 10
+     requests_per_period: 5
+     mitigation_timeout: 10
+     requests_to_origin: true
+     counting_expression: "(http.response.code eq 403)"
+     expression: "(http.request.method eq \"POST\" and http.request.uri contains \"/login\")"
+
+  -  description: "POST Requests"
+     enabled: true
+     action: "log"
+     period: 10
+     requests_per_period: 25
+     mitigation_timeout: 10
+     requests_to_origin: false
+     #counting_expression: "(http.response.code eq 403)"
+     expression: "(not ip.src in $policy_name_rate_control_bypass_list and not ip.src in $rate_control_bypass_global_list and http.request.method eq \"POST\")"
+
+  -  description: "Page View Requests"
+     enabled: true
+     action: "log"
+     period: 10
+     requests_per_period: 45
+     mitigation_timeout: 600
+     requests_to_origin: false
+     #counting_expression: "(http.response.code eq 403)"
+     expression: "(not ip.src in $policy_name_rate_control_bypass_list and not ip.src in $rate_control_bypass_global_list and http.request.method ne \"POST\" and not http.request.body.mime in {\" jpg\" \" jpeg\" \" png \" \"gif \" \"bmp\" \" eot\" \" woff\" \" ico\" \" swf\" \" f4v\" \" flv \" \"mp3\" \" mp4 \" \"pdf\" \"js\" \"css\"})"
+
+  -  description: "Origin Error"
+     enabled: true
+     action: "log"
+     period: 10
+     requests_per_period: 40
+     mitigation_timeout: 10
+     requests_to_origin: true
+     counting_expression: "(http.response.code in {400 401 402 403 404 405 406 407 408 409 410 500 501 502 503 504})"
+     expression: "(not ip.src in $policy_name_rate_control_bypass_list and not ip.src in $rate_control_bypass_global_list)"
+
+  -  description: "SLOW POST Requests"
+     enabled: true
+     action: "log"
+     period: 60
+     requests_per_period: 600
+     mitigation_timeout: 600
+     requests_to_origin: true
+     #counting_expression: "(http.response.code eq 403)"
+     expression: "(http.request.method eq \"POST\" and http.request.body.size eq 10)"
+
