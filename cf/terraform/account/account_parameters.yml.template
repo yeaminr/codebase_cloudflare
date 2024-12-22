@@ -1,0 +1,14 @@
+policy_name_rate_control_bypass_list :
+  - "1.1.1.1"
+  - "4.4.4.4"
+rate_control_bypass_global_list :
+  - "4.4.4.4"
+  - "5.5.5.5"
+group_wide_whitelist :
+  - "1.1.1.1"
+  - "2.2.2.2"
+group_wide_blacklist :
+  - "1.1.1.1"
+  - "2.2.2.2"
+  - "8.8.6.6"
+  - "8.8.8.8"
