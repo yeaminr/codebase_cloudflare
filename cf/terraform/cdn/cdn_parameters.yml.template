@@ -1,0 +1,58 @@
+# yaml-language-server: $schema=../../../schema/cdn_parameters_schema.yml
+
+managed_request_headers:
+  - add_true_client_ip_headers
+  - remove_visitor_ip_headers
+
+managed_response_headers: []
+
+cache_settings:
+  - name: dynamic-content-webapp
+    description: Dynamic Content webapp
+    expression: "true"
+    cache: true
+    edge_ttl_mode: bypass_by_default
+    origin_cache_control: true
+  - name: downstream-cacheability-webapp
+    description: Downstream Cacheability webapp
+    expression: "true"
+    cache: false
+    browser_ttl_mode: respect_origin
+
+configuration_settings:
+  - name: configuration-rules-webapp
+    description: Configuration rules webapp
+    expression: "true"
+    automatic_https_rewrites: true
+    bic: true
+    ssl: "full"
+
+origin_settings:
+  - name: origin-rules-webapp
+    description: Origin rules webapp
+    expression: "true"
+    origin_port: 443
+
+compression_settings:
+  - name: default-compression-settings
+    description: Compression settings webapp
+    expression: '(http.response.content_type.media_type in {"text/html" "text/richtext" "text/plain" "text/css" "text/x-script" "text/x-component" "text/x-java-source" "text/x-markdown" "application/javascript" "application/x-javascript" "text/javascript" "text/js" "image/x-icon" "image/vnd.microsoft.icon" "application/x-perl" "application/x-httpd-cgi" "text/xml" "application/xml" "application/rss+xml" "application/vnd.api+json" "application/x-protobuf" "application/json" "multipart/bag" "multipart/mixed" "application/xhtml+xml" "font/ttf" "font/otf" "font/x-woff" "image/svg+xml" "application/vnd.ms-fontobject" "application/ttf" "application/x-ttf" "application/otf" "application/x-otf" "application/truetype" "application/opentype" "application/x-opentype" "application/font-woff" "application/eot" "application/font" "application/font-sfnt" "application/wasm" "application/javascript-binast" "application/manifest+json" "application/ld+json" "application/graphql+json" "application/geo+json"})'
+    algorithms: ["gzip", "auto"]
+
+page_rules:
+  - name: default-page-rule
+    url: default
+    priority: 1
+    cache_ttl_by_status:
+      - status: 301-302
+        ttl: 0
+
+redirect_settings:
+  - name: redirect-rule-1
+    description: Redirect rule 1
+    expression: (http.host eq \"example.host.com\")
+    enabled: false
+    status_code: 301
+    target_url: "https://example.com"
+    preserve_query_string: true
+    
