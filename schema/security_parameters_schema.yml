@@ -1,0 +1,115 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+
+type: object
+properties:
+  waf_managed_ruleset: 
+    $ref: "#/definitions/waf_managed_ruleset"
+  waf_custom_ruleset:
+    $ref: "#/definitions/waf_custom_ruleset"
+  waf_rate_limiting_ruleset:
+    $ref: "#/definitions/waf_rate_limiting_ruleset"
+
+required: [waf_managed_ruleset, waf_custom_ruleset, waf_rate_limiting_ruleset]
+
+definitions:
+  waf_managed_ruleset:
+    type: object
+    items:
+      exceptions:
+        type: object
+        required: ["description", "enabled", "action", "expression"]
+        properties:
+          description:
+            type: string
+          enabled:
+            type: boolean
+          action:
+            type: string
+          expression:
+            type: string
+      rules:
+        type: array
+        items:
+          type: object
+          required: ["description", "enabled", "action", "expression", "action_parameters", "overrides"]
+          properties:
+            description:
+              type: string
+            enabled:
+              type: boolean
+            action:
+              type: string
+            expression:
+              type: string
+            action_parameters:
+              type: object
+              required: ["id", "version"]
+              properties:
+                id:
+                  type: string
+                version:
+                  type: string
+            overrides:
+              type: object
+              required: ["enabled", "action", "rules"]
+              properties:
+                enabled:
+                  type: boolean
+                action:
+                  type: string
+                rules:
+                  type: array
+                  items:
+                    type: object
+                    required: ["rule_id", "action", "enabled"]
+                    properties:
+                      rule_id:
+                        type: string
+                      action:
+                        type: string
+                      enabled:
+                        type: boolean
+  waf_custom_ruleset:
+    type: object
+    items:
+      rules:
+        type: array
+        items:
+          type: object
+          required: ["description", "enabled", "action", "expression"]
+          properties:
+            description:
+              type: string
+            enabled:
+              type: boolean
+            action:
+              type: string
+            expression:
+              type: string
+  waf_rate_limiting_ruleset:
+    type: object
+    items:
+      rules:
+        type: array
+        items:
+          type: object
+          required: ["description", "enabled", "action", "period", "requests_per_period", "mitigation_timeout", "requests_to_origin", "counting_expression", "expression"]
+          properties:
+            description:
+              type: string
+            enabled:
+              type: boolean
+            action:
+              type: string
+            period:
+              type: string
+            requests_per_period:
+              type: integer
+            mitigation_timeout:
+              type: integer
+            requests_to_origin:
+              type: boolean
+            counting_expression:
+              type: string
+            expression:
+              type: string
