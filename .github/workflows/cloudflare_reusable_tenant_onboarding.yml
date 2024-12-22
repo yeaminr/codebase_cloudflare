@@ -1,0 +1,47 @@
+name: 'Cloudflare Reusable Tenant Onboarding'
+# INPUTS:
+# https://github.com/CBA-General/groupsec-edgesecurity-tenant-repo-template/blob/feature/ESDE-6012-dir-content/resources/templates/tenant_definition.yml
+
+# WORKFLOW:
+# https://commbank.atlassian.net/wiki/spaces/GSTG/pages/949457134/Edge+Security+End-to-End+Future+State+Technical+Workflows#On-Tenant-GitHub-Repo
+on:
+  workflow_call:
+    inputs:
+      tenant_definition_file:
+        description: 'Path to tenant definition file'
+        required: true
+        type: string
+
+jobs:
+  cloudflare-tenant-onboarding:
+    runs-on: [default]
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v4
+
+      - name: Show working directory
+        run: ls -la
+
+      - name: 'Read and extract information from tenant definition file'
+        run: |
+          echo "Read and extract information from tenant definition file"
+          cat ${{ inputs.tenant_definition_file }}
+
+      - name: 'Validate input from tenant definition file (will be moved to CI)'
+        run: echo "Validate input from tenant definition file"
+
+      - name: 'Identify targeted environments'
+        run: |
+          echo "Identify targeted environments and extract them from tenant definition file"
+          
+      - name: 'Create the tenant AWS IAM roles'        
+        run: echo "GHA workflow creates the tenant AWS IAM roles, one for each environment for read access to tenant AWS S3 objects and store them in their Vault namespace paths"
+
+      - name: 'Create the tenant scoped API tokens'        
+        run: echo "GHA workflow creates the tenant scoped API tokens, one for each environment and store them in their Vault namespace paths"
+
+      - name: 'Run Cloudflare script to create CSR, send it to cert API and get issued custom certificate'        
+        run: echo "Run Cloudflare script to create CSR, send it to cert API and get issued custom certificate"
+
+      - name: 'Run Cloudflare script to upload custom certificate to Cloudflare'        
+        run: echo "Run Cloudflare script to upload custom certificate to Cloudflare"
