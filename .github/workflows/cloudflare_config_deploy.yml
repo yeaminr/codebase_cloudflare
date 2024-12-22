@@ -1,0 +1,122 @@
+name: 'Cloudflare Zone Creation & Config Deploy'
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: 'Environment to deploy the config file'
+        required: true
+        type: string
+      config_type:
+        description: 'Type of config file to deploy'
+        required: true
+        type: string
+      zone_name:
+        description: 'Zone name to deploy the config file'
+        required: true
+        type: string
+        
+env:
+  DHP_RUNNER_ENDPOINT: https://d-s-es1-app-alb.chpcyberp1dev01.aws.test.au.internal.cba
+
+permissions:
+  id-token: write         # This is required for requesting the JWT
+  contents: read          # This is required for checking out the code
+
+jobs:
+  setup:
+    runs-on: [default]
+    steps:
+      - name: Check out tenant repository
+        uses: actions/checkout@v4
+
+      - name: Validate config file exists
+        id: vars
+        run: |
+          environment=${{ github.event.inputs.environment }}
+          config_type=${{ github.event.inputs.config_type }}
+          zone_name=${{ github.event.inputs.zone_name }}
+
+          if [[ "${config_type}" == "zone" ]]; then
+            # Check zone file exists
+            if [[ ! -f "${environment}/${zone_name}/zone_parameters.yml" ]]; then
+              echo "Zone $zone_name parameters file does not exist"
+              exit 1
+            fi
+          elif [[ "${config_type}" == "cdn" || "${config_type}" == "security" || "${config_type}" == "tls" || "${config_type}" == "cert" ]]; then
+            # Check config file exists
+            if [[ ! -f "${environment}/${zone_name}/${config_type}/${config_type}_parameters.yml" ]]; then
+              echo "Config file $config_type does not exist"
+              exit 1
+            fi
+          else
+            echo "Invalid config type"
+            exit 1
+          fi
+      - name: Validate yamls
+        run: |
+          echo "Invoke DHP api to validate the yaml files"        
+
+  plan-config:
+    runs-on: [default]
+    needs: setup
+    steps:
+      - name: Plan zone ${{ github.event.inputs.zone_name }} config update - ${{ github.event.inputs.config_type }}
+        run: |
+          environment=${{ github.event.inputs.environment }}
+          config_type=${{ github.event.inputs.config_type }}
+          zone_name=${{ github.event.inputs.zone_name }}
+          
+          # Generate ID token
+          id_token=$(curl -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://DHPRunnerAPI" | jq -r '.value')
+          
+          # Invoke DHP Api for Plan
+          plan_response_status_code=$(curl -X GET "${{ env.DHP_RUNNER_ENDPOINT }}/runner/${config_type}/${environment}?fqdn=${zone_name}" -H 'accept: application/json' -H 'Content-Type: application/json' -H "X-Github-Auth-Header: Bearer $id_token" -s -o output.json -w "%{http_code}")
+
+          # Print the output
+          if [[ "${config_type}" == "cert" ]]; then
+            cat output.json | jq
+          else
+            cat output.json | jq -r '.detail'
+          fi
+
+          # Check if the plan was successful
+          if [[ "${plan_response_status_code}" != "200" ]]; then
+            echo "Error in executing plan"
+            exit 1
+          else
+            echo "Plan executed successfully"
+          fi
+
+  deploy-config:
+    runs-on: [default]
+    if: github.ref == 'refs/heads/main'
+    needs: [setup, plan-config]
+    environment: main
+    steps:
+      - name: Deply zone ${{ github.event.inputs.zone_name }} config update - ${{ github.event.inputs.config_type }}
+        if: github.ref == 'refs/heads/main'
+        run: |
+          environment=${{ github.event.inputs.environment }}
+          config_type=${{ github.event.inputs.config_type }}
+          zone_name=${{ github.event.inputs.zone_name }}
+          
+          # Generate ID token
+          id_token=$(curl -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://DHPRunnerAPI" | jq -r '.value')
+          
+          # Invoke DHP Api for Apply
+          apply_response_status_code=$(curl -X POST "${{ env.DHP_RUNNER_ENDPOINT }}/runner/${config_type}/${environment}?fqdn=${zone_name}" -H 'accept: application/json' -H 'Content-Type: application/json' -H "X-Github-Auth-Header: Bearer $id_token" -s -o output.json -w "%{http_code}")
+
+          # Print the output
+          if [[ "${config_type}" == "cert" ]]; then
+            cat output.json | jq
+          else
+            cat output.json | jq -r '.detail'
+          fi
+          
+          # Check if the apply was successful
+          if [[ "${apply_response_status_code}" != "200" ]]; then
+            echo "Error in executing apply"
+            exit 1
+          else
+            echo "Apply executed successfully"
+          fi
