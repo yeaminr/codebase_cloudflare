@@ -1,0 +1,12 @@
+country: AU
+state: NSW
+locality: Sydney
+organization: Commonwealth Bank of Australia
+organizational_unit: SauravOrg
+common_name: "autopoc1.evolveatcommbank.com.au"
+sans:
+- "autopoc1.evolveatcommbank.com.au"
+key_type: rsa2048
+hostnames:  # hostnames to create. Generated certificate will be supplied to these hostnames
+- "www.csr.com.au"
+- "app.csr.com.au"

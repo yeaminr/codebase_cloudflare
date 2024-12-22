@@ -1,0 +1,70 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+
+type: object
+properties:
+    version:
+        type: integer
+    description:
+        type: string
+    tenant:
+        type: string
+    ci:
+        type: string
+    psg:
+        type: string
+    team_email:
+        type: string
+    github:
+        type: object
+        properties:
+            codeowners:
+                type: array
+                items:
+                    type: string
+    edge_security_tenant_settings:
+        type: object
+        properties:
+            dev:
+                type: object
+                properties:
+                    domains:
+                        type: array
+                        items:
+                            type: string
+                    members:
+                        type: array
+                        items:
+                            type: string
+            tst:
+                type: object
+                properties:
+                    domains:
+                        type: array
+                        items:
+                            type: string
+                    members:
+                        type: array
+                        items:
+                            type: string
+            stg:    
+                type: object
+                properties:
+                    domains:
+                        type: array
+                        items:
+                            type: string
+                    members:
+                        type: array
+                        items:
+                            type: string
+            prd:    
+                type: object
+                properties:
+                    domains:
+                        type: array
+                        items:
+                            type: string
+                    members:
+                        type: array
+                        items:
+                            type: string
