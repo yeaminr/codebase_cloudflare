@@ -1,0 +1,109 @@
+# This workflow will build the Docker image and check that the necessary packages are installed
+# This workflow will run on every push to feature or fix branches to provide developers with clarity on the state of the Docker image
+# CI:
+  # 1. Fetch Artifactory creds from Vault
+  # 2. Login to Artifactory
+  # 3. Build the Docker image
+  # 4. Run the Docker container and check that the necessary packages are installed
+# CD:
+  # 1. Run CI
+  # 2. Login to Edge Security Artifactory
+  # 3. Push the Docker image to Edge Security Artifactory
+
+  name: Docker Release Workflow
+
+  on:
+    push:
+      branches:
+        - feature/**
+        - 'ESDE-**'
+        - '*fix/**'
+        - main
+      paths:
+        - 'docker/**'
+        - '.github/workflows/docker_release.yml'
+        - 'runner/**'
+        - 'cf/terraform/**'
+        - 'cf/python/**'
+        - 'cf/accounts.yml'
+
+  permissions:
+    id-token: write         # This is required for requesting the JWT
+    contents: read          # This is required for actions/checkout
+
+  env:
+    IMAGE_PREFIX: terraform-runner
+
+  jobs:
+    build-docker-and-test:
+      runs-on: default
+      environment:
+        name: 'cloudflare_development'
+
+      steps:
+        - name: Checkout code
+          uses: actions/checkout@v4
+        
+        - name: Fetch Creds from Vault
+          uses: hashicorp/vault-action@v3
+          with:
+              method: jwt
+              path: jwt_github-repository
+              url: ${{ vars.VAULT_URL }}
+              role: default
+              secrets: |
+                ${{ vars.VAULT_NAMESPACE }}/${{ vars.VAULT_ARTIFACTORY_PATH }}  akamai_artifactory_service_username | DOCKER_USERNAME;
+                ${{ vars.VAULT_NAMESPACE }}/${{ vars.VAULT_ARTIFACTORY_PATH }}  akamai_artifactory_service_password | DOCKER_PASSWORD;
+
+        - name: Run Unit Tests
+          run: |
+            pip install -r docker/requirements/pypkgs.txt
+            pip install cbacert --index-url="https://$DOCKER_USERNAME:$DOCKER_PASSWORD@artifactory.internal.cba/artifactory/api/pypi/cloudservices-cert-management-engineering-pypi/simple" --no-build-isolation
+            python -m pytest --ignore=testing -v
+
+        - name: Login to Application Infrastructure Public Artifactory
+          uses: docker/login-action@v3
+          with:
+              registry: applicationinfrastructure-public.docker.internal.cba
+              username: ${{ env.DOCKER_USERNAME }}
+              password: ${{ env.DOCKER_PASSWORD }}
+
+        - name: Build Docker image
+          run: |
+            curr_datetime=$(TZ=Australia/Sydney date '+%Y%m%d.%H%M%S')
+            image_name="${{ env.IMAGE_PREFIX }}:v$curr_datetime"
+            docker build --secret id=artifactory-service-password,env=DOCKER_PASSWORD --build-arg ARTIFACTORY_SERVICE_USERNAME=${{ env.DOCKER_USERNAME }} --tag $image_name -f docker/Dockerfile .
+            echo "IMAGE_NAME=$image_name" >> $GITHUB_ENV
+          env:
+            DOCKER_PASSWORD: ${{ env.DOCKER_PASSWORD }}
+
+        - name: Run and Test Docker container
+          run: |
+            image_name=${{ env.IMAGE_NAME }}
+            echo 'Checking installed packages...'
+            echo '==Check Python=='
+            docker run $image_name bash -c 'python3 -V'
+            echo '==Check Terraform=='
+            docker run $image_name bash -c "terraform version"
+
+            echo 'Run Terraform init'
+            docker run $image_name bash -c "terraform -chdir=cf/terraform/account init"
+            docker run $image_name bash -c "terraform -chdir=cf/terraform/cdn init"
+            docker run $image_name bash -c "terraform -chdir=cf/terraform/security init"
+            docker run $image_name bash -c "terraform -chdir=cf/terraform/tls init"
+            docker run $image_name bash -c "cd cf/terraform/tls && ls -la"
+          
+        - name: Login to Edge Security Artifactory
+          if: github.ref == 'refs/heads/main'
+          uses: docker/login-action@v3
+          with:
+              registry: digitalprotectiongroup-edgesecurity.docker.internal.cba
+              username: ${{ env.DOCKER_USERNAME }}
+              password: ${{ env.DOCKER_PASSWORD }}
+
+        - name: Push Docker image to Edge Security Artifactory
+          if: github.ref == 'refs/heads/main'
+          run: |
+            image_name=${{ env.IMAGE_NAME }}
+            docker tag $image_name digitalprotectiongroup-edgesecurity.docker.internal.cba/$image_name
+            docker push digitalprotectiongroup-edgesecurity.docker.internal.cba/$image_name
