@@ -29,7 +29,8 @@ def create_dir() -> str | None:
             secrets.choice(string.ascii_lowercase + string.digits) for _ in range(10)
         )
     try:
-        os.makedirs(working_dir)
+        if not os.path.exists(working_dir):
+            os.makedirs(working_dir)
     except OSError as e:
         logger.error(
             "Error: Failed to make new working directory. %s - %s.", e.filename, e.strerror)

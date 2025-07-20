@@ -7,7 +7,7 @@ from enum import Enum
 from pydantic import BaseModel, field_validator
 
 from runner.src import api_constant
-from cf.python.src import helpers
+from runner.src import helpers
 
 
 class EnvironmentModel(str, Enum):
@@ -21,6 +21,22 @@ class EnvironmentModel(str, Enum):
     prd = "prd"
 
 
+class ConfigTypeModel(str, Enum):
+    """
+    Enum for the config type model.
+    """
+
+    account = "account"
+    app_list = "app_list"
+    zone = "zone"
+    cdn = "cdn"
+    security = "security"
+    tls = "tls"
+    cert = "cert"
+    mtls = "mtls"
+    workers = "workers"
+
+
 class InputModel(BaseModel):
     """
     Input model.
@@ -30,6 +46,7 @@ class InputModel(BaseModel):
     action: str
     config_type: str
     fqdn: Optional[str] = None
+    change_number: Optional[str] = None
 
     @property
     def account_id(self) -> str:
@@ -67,7 +84,7 @@ class InputModel(BaseModel):
         """
         if value is None or value == "" or value not in api_constant.VALID_ACTIONS:
             raise ValueError(
-                "Action is not valid. It should be either 'plan' or 'apply'."
+                f"Action is not valid. It should be one of {api_constant.VALID_ACTIONS}"
             )
         return value
 
@@ -88,15 +105,30 @@ class CertOutputModel(BaseModel):
     """
     Cert output model
     """
-    csr: Optional[str] = None
+
+    name: Optional[str] = None
     csr_id: Optional[str] = None
-    csr_status: Optional[str] = "to_be_created"
-    # cert: Optional[str] = None
-    cert_status: Optional[str] = "to_be_uploaded"
-    expiresin: Optional[str] = None
+    cert_pack_id: Optional[str] = None
+    expires_on: Optional[str] = ""
     common_name: Optional[str] = None
     sans: Optional[list] = None
-    error: Optional[str] = None
-    venafi_status: Optional[str] = "to_be_created"
+    priority: Optional[str] = None
 
-    
+
+class TestInputModel(BaseModel):
+    """
+    Test input model.
+    """
+
+    class ReportInputs(BaseModel):
+        """
+        Report inputs model.
+        """
+
+        tenant_repo: str
+        github_run_id: str
+
+    fqdn: str
+    test_tags: str
+    log_level: str = "warning"
+    report_inputs: ReportInputs
