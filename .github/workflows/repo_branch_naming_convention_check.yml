@@ -1,0 +1,26 @@
+name: Repo Branch Naming Convention Check
+
+# Controls when the workflow will run
+on:
+  # Triggers the workflow on any PR to "main" branch 
+  # event's activity type is opened, synchronize, or reopened
+  push:
+    branches-ignore:
+      # do not trigger on main branch
+      - main
+
+jobs:
+  check-branch-naming-convention:
+    runs-on: default
+    steps:
+      - name: Check branch naming convention
+        run: |
+          echo "Checking branch naming convention..."
+          branch=${{ github.ref_name }}
+          if [[ $branch != feature/* && $branch != fix/* && $branch != ESDE-* && $branch != docs/* ]]; then
+            echo "Branch naming convention is incorrect."
+            echo "Branch name: $branch"
+            echo "Branch name should start with either 'feature/', 'fix/', 'ESDE-', or 'docs/'."
+            echo "Example: feature/ESDE-1234-new-feature"
+            exit 1
+          fi

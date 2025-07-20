@@ -1,0 +1,4 @@
+git-all
+jq
+curl
+unzip

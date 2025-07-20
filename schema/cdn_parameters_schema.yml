@@ -1,0 +1,178 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+
+type: object
+properties:
+  dns_records:
+    $ref: "#/definitions/dns_records"
+  cache_settings:
+    $ref: "#/definitions/cache_settings"
+  redirect_settings:
+    $ref: "#/definitions/redirect_settings"
+  managed_request_headers:
+    $ref: "#/definitions/managed_request_headers"
+  managed_response_headers:
+    $ref: "#/definitions/managed_response_headers"
+
+definitions:
+  managed_request_headers:
+    type: array
+    uniqueItems: true
+    items:
+      type: string
+      enum:
+        - add_client_certificate_headers
+        - add_visitor_location_headers
+        - add_true_client_ip_headers #conflicts with remove_visitor_ip_headers
+        - remove_visitor_ip_headers #conflicts with add_true_client_ip_headers
+        - add_waf_credential_check_status_headers
+
+  managed_response_headers:
+    type: array
+    items:
+      type: string
+      enum:
+        - remove_x-powered-by_header
+        - add_security_headers
+
+  dns_records:
+    type: array
+    items:
+      type: object
+      required: ["name", "type", "content", "ttl", "proxied", "tags"]
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+        content:
+          type: string
+        ttl:
+          type: integer
+        proxied:
+          type: boolean
+        tags:
+          type: array
+          items:
+            type: string
+
+  cache_settings:
+    type: array
+    items:
+      type: object
+      required: ["name", "expression"]
+      properties:
+        name:
+          type: string
+        expression:
+          type: string
+        enabled:
+          type: boolean
+        origin_cache_control:
+          type: boolean
+        respect_strong_etags:
+          type: boolean
+        disable_stale_while_updating:
+          type: boolean
+        additional_cacheable_ports:
+          type: array
+          items:
+            type: integer
+        browser_ttl_mode:
+          type: string
+        browser_ttl_default:
+          type: integer
+        read_timeout:
+          type: integer
+        edge_ttl_mode:
+          type: string
+        edge_ttl_default:
+          type: integer
+        edge_ttl_status_code_settings:
+          type: array
+          items:
+            type: object
+            anyOf:
+              - not:
+                  required: ["code", "from"]
+              - not:
+                  required: ["code", "to"]
+            properties:
+              code:
+                type: integer
+              value:
+                type: integer
+              from:
+                type: integer
+              to:
+                type: integer
+        cache_key_settings:
+          type: array
+          items:
+            type: object
+            allOf:
+              - not:
+                  required: ["cache_by_device_type", "user_key"]
+              - not:
+                  required: ["query_string_include", "query_string_exclude"]
+            properties:
+              cache_deception_armor:
+                type: boolean
+              ignore_query_strings_order:
+                type: boolean
+              custom_key_enabled:
+                type: boolean
+              cache_by_device_type:
+                type: boolean
+              cookie_include:
+                type: array
+                items:
+                  type: string
+              cookie_presence:
+                type: array
+                items:
+                  type: string
+              header_include:
+                type: array
+                items:
+                  type: string
+              header_presence:
+                type: array
+                items:
+                  type: string
+              header_exclude_origin:
+                type: boolean
+              header_contains:
+                type: object
+                additionalProperties:
+                  type: array
+              host_resolved:
+                type: boolean
+              query_string_include:
+                type: array
+                items:
+                  type: string
+              query_string_exclude:
+                type: array
+                items:
+                  type: string
+              user_key:
+                type: string
+
+  redirect_settings:
+    type: array
+    items:
+      type: object
+      required: ["name", "expression", "status_code", "target_url"]
+      properties:
+        name:
+          type: string
+        expression:
+          type: string
+        enabled:
+          type: boolean
+        status_code:
+          type: integer
+        target_url:
+          type: string
+        preserve_query_string:
+          type: boolean

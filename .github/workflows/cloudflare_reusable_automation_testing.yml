@@ -1,0 +1,98 @@
+name: 'Cloudflare Reusable Automation Testing'
+on:
+  # This will allow the self-service repositories to trigger the automation tests using their input yaml files
+  # Uncomment this section once data provider has been finalised
+  # workflow_call:
+  #   inputs:
+  #     tenant_definition_file:
+  #       description: 'Path to tenant definition file'
+  #       required: true
+  #       type: string
+  #     tenant_selfservice_setup_file:
+  #       description: 'Path to tenant selfservice setup file'
+  #       required: true
+  #       type: string
+  workflow_dispatch:
+    inputs:
+      app-url:
+        description: 'Application url for testing DNS config'
+        required: true
+        type: string
+      tags:
+        description: 'Test scenario tags (pytest markers)'
+        required: true
+        type: string
+      log-level:
+        description: 'Log level output for test execution'
+        required: true
+        default: 'warning'
+        type: choice
+        options:
+          - info
+          - warning
+      tenant-dns:
+        description: 'Tenant DNS name'
+        required: true
+        type: string
+      security-config-filepath:
+        description: 'Path to security config YAML'
+        required: true
+        type: string
+      certificate-config-filepath:
+        description: 'Path to certificate config YAML'
+        required: true
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  test:
+    runs-on: [default]
+    environment:
+        name: 'cloudflare_development'
+    defaults:
+      run:
+        working-directory: ./testing/pytest_framework
+
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v4
+
+      - name: Retrieve Akamai and Artifactory credentials
+        uses: hashicorp/vault-action@v3.0.0
+        with:
+          method: jwt
+          path: jwt_github-repository
+          url: ${{ vars.VAULT_URL }}
+          role: default
+          secrets: |
+            ${{ vars.VAULT_NAMESPACE }}/${{ vars.VAULT_TESTING_PATH }} cloudflare_token | CLOUDFLARE_TOKEN;
+            ${{ vars.VAULT_NAMESPACE }}/${{ vars.VAULT_TESTING_PATH }} proxy_url | PROXY_URL;
+            ${{ vars.VAULT_NAMESPACE }}/${{ vars.VAULT_TESTING_PATH }} proxy_port | PROXY_PORT;
+
+      # - name: Read and extract information from tenant config file
+      #   run: |
+      #     echo "Read and extract information from tenant config file"
+
+      # - name: Identify targeted environments
+      #   run: |
+      #     echo "Identify targeted environments and extract them from tenant definition file"
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Execute tests
+        run: |
+          pytest -v --log-cli-level=${{ inputs.log-level }} -m "${{ inputs.tags }}"
+        env:
+          CLOUDFLARE_TOKEN: ${{ env.CLOUDFLARE_TOKEN }}
+          PROXY_URL: ${{ env.PROXY_URL }}
+          PROXY_PORT: ${{ env.PROXY_PORT }}
+          APP_API_URL: ${{ inputs.app-url }}
+          CF_TENANT_DOMAIN: ${{ inputs.tenant-dns }} # TODO update this to retrieve from tenant config YAML
+          CF_SECURITY_CONFIG_FILE: ${{ inputs.security-config-filepath }}
+          CF_CERTIFICATE_CONFIG_FILE: ${{ inputs.certificate-config-filepath }}
