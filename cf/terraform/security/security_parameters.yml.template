@@ -1,198 +1,695 @@
 # yaml-language-server: $schema=../../../schema/security_parameters_schema.yml
 
-waf_managed_ruleset: 
-  exceptions:
-     description: "WAF Bypass"
-     enabled: true
-     action: "skip"
-     expression: "(ip.src in $group_wide_whitelist) or (ip.src in $policy_name_rate_control_bypass_list)"
-  rules: 
-  -  description: "Exposed credentials check rules"
-     enabled: true
-     action: "execute"
-     expression: "true"
-     action_parameters:
-        id: "c2e184081120413c86c3ab7e14069605"
-        version: "latest"
-     overrides:
-       enabled: true
-       action: "log"
-       rules: []
+bot_management_settings:
+  enable_js: true
+  auto_update_model: true
 
-  -  description: "Cloudflare OWASP Core Ruleset"
-     enabled: true
-     action: "execute"
-     expression: "true"
-     action_parameters:
-        id: "4814384a9e5d4991b9815dcfc25d2f1f"
-        version: "latest"
-     overrides: 
-       enabled: false
-       action: "log"
-       rules: []
+waf_managed_ruleset: 
+  rules: 
+  - description: "WAF Bypass"
+    enabled: true
+    action: "skip"
+    expression: "(ip.src in $cloudflare_platform_wide_ip_bypass)"
+    action_parameters:
+      skip_rules:
+        #If specific rules from a specific managed ruleset needs to be skipped, update one of the below rules.
+        #If we need to skip all remaining rules, use ruleset: "current"
+      
+        #OWASP ruleset rules
+      - ruleset_id: 4814384a9e5d4991b9815dcfc25d2f1f
+        rule_ids: "8ac8bc2a661e475d940980f9317f28e1,53065ac9bd9449f3895f1865467a0e6a"
+
+        #Exposed credential ruleset
+      - ruleset_id: c2e184081120413c86c3ab7e14069605
+        rule_ids: "53f38cd8974a4cd3bc9a8a64fc731fb0,ef21b0a932ae422790f9249d213b85e6,2f0eb8724f2a450997bc91a7aa862203"
+
+        #Cloudflare Managed ruleset rules
+      - ruleset_id: efb7b8c949ac4650a09736fc376e9aee
+        rule_ids: "e3a567afc347477d9702d9047e97d760"
+
+    logging:
+      enabled: true
+
+  - description: "Cloudflare OWASP Core Ruleset"
+    enabled: true
+    action: "execute"
+    expression: "true"
+    action_parameters:
+      id: "4814384a9e5d4991b9815dcfc25d2f1f"
+      matched_data:
+        public_key: "xMTZYNh4/uqgWJIuREQV8PN65OyfinjF4cnYsBrcHHE="
+      overrides: 
+        categories:
+         - category: "paranoia-level-2"
+           enabled: false
+         - category: "paranoia-level-3"
+           enabled: false
+         - category: "paranoia-level-4"
+           enabled: false
+        rules:
+         - rule_id: "6179ae15870a4bb7b2d480d4843b323c"
+           action: "log"
 
   - description: "Cloudflare Managed Ruleset"
     enabled: true
     action: "execute"
     expression: "true"
     action_parameters:
-       id: "efb7b8c949ac4650a09736fc376e9aee"
-       version: "latest"
-    overrides:
-      #enabled: true
-      action: "block"
-      rules:
-        - rule_id: "8e361ee4328f4a3caf6caf3e664ed6fe"
-          action: "block"
-          enabled: true
-
+      id: "efb7b8c949ac4650a09736fc376e9aee"
+      matched_data:
+        public_key: "xMTZYNh4/uqgWJIuREQV8PN65OyfinjF4cnYsBrcHHE="
+      overrides:
+        rules:
+          - rule_id: "8e361ee4328f4a3caf6caf3e664ed6fe"
+            enabled: true
+          - rule_id: "9014439f4a0b4fbfa5412d8cad8ba4bc"
+            enabled: true
+ 
 waf_custom_ruleset:
   rules: 
-     # Order 2
+  -  description: "Lock down Non-Prod Envs"
+     enabled: true
+     action: "block"
+     # expression: "not (ip.src in $cloudflare_platform_wide_nonprd_ip_whitelist or ip.src in $<PLACEHOLDER_APP_NAME>_nonprd_ip_whitelist)"
+     expression: "not (ip.src in $cloudflare_platform_wide_nonprd_ip_whitelist)"
+
   -  description: "RUDY Attacks"
      enabled: true
      action: "block"
      expression: "(http.request.method eq \"POST\" and http.request.uri.path matches r\"(comment|conversation|event|poll)/create\" and http.cookie matches r\"auth_session=[0-9a-zA-Z]{32}-[0-9]{10}-[0-9a-z]{6}\")"
+ 
+  -  description: "Cloudflare Platform Wide IP Bypass"
+     enabled: true
+     action: "skip"
+     action_parameters:
+       phases: ["http_ratelimit", "http_request_sbfm"]
+       products: ["bic", "hot", "securityLevel", "uaBlock", "zoneLockdown"]
+     expression: "(ip.src in $cloudflare_platform_wide_ip_bypass)"
+     logging:
+       enabled: true
+ 
+  -  description: "Cloudflare Platform Wide IP Blocking"
+     enabled: true
+     action: "block"
+     expression: "(ip.src in $cloudflare_platform_wide_ip_blacklist)"
+ 
+  -  description: "Cloudflare Platform Wide ASN Blocking"
+     enabled: true
+     action: "block"
+     expression: "(ip.src.asnum in $cloudflare_platform_wide_asn_blacklist)"
+     
+  -  description: "App-Specific Rate Control Bypass"
+     enabled: true
+     action: "skip"
+     action_parameters:
+       phases: ["http_ratelimit"]
+     #expression: "(ip.src in $<PLACEHOLDER_APP_IP_BYPASS_LIST>)"
+     expression: "(ip.src in $cloudflare_platform_wide_ip_bypass)"
+     logging:
+       enabled: true
 
-     # Order 3
-  -  description: "Content Scan"
+  -  description: "App-Specific IP Blocking"
+     enabled: true
+     action: "block"
+     #expression: "(ip.src in $<PLACEHOLDER_APP_IP_BLACKLIST>)"
+     expression: "(ip.src in $cloudflare_platform_wide_ip_blacklist)"
+ 
+  -  description: "App-Specific ASN Blocking"
+     enabled: true
+     action: "block"
+     #expression: "(ip.src.asnum in $<PLACEHOLDER_APP_ASN_BLACKLIST>)"
+     expression: "(ip.src.asnum in $cloudflare_platform_wide_asn_blacklist)"
+
+  -  description: "App-Specific Geo Blocking"
+     enabled: true
+     action: "block"
+     #expression: "(ip.src.asnum in $<PLACEHOLDER_APP_GEOBLOCKING>)"
+     expression: "(ip.geoip.country in {\"\"})"
+
+  -  description: "Sanctioned Geo Locations - Mobile"
+     enabled: false
+     action: "block"
+     expression: "(ip.geoip.country in {\"IR\"\"KP\" \"SY\" \"CU\"} or ip.geoip.subdivision_1_iso_code eq \"UA-14\" or ip.geoip.subdivision_1_iso_code eq \"UA-09\" or ip.geoip.subdivision_1_iso_code eq \"UA-43\") and http.user_agent matches r\".*CommBank App.*\" "
+     action_parameters:
+       response:
+         content: "{\n\"reference\": \"UA-451\",\n\"message\": \"You’re blocked from accessing our online services because you’re in a sanctioned country or region.\",\n\"errorMessageButtons\": [\n{ \"Text\": \"OK\" }\n,\n{ \"Text\": \"See details\", \"Url\": \"https://www.commbank.com.au/important-info/blocked.html\" }\n]\n}"
+         content_type: "application/json"
+         status_code: 451
+
+  -  description: "Block PUT method"
+     enabled: false
+     action: "block"
+     expression: "(http.request.method eq \"PUT\")"
+ 
+  -  description: "Block PATCH method"
+     enabled: false
+     action: "block"
+     expression: "(http.request.method eq \"PATCH\")"
+
+  -  description: "Block OPTIONS method"
+     enabled: false
+     action: "block"
+     expression: "(http.request.method eq \"OPTIONS\")"
+
+  -  description: "Block DELETE method"
+     enabled: false
+     action: "block"
+     expression: "(http.request.method eq \"DELETE\")"
+
+  -  description: "Malicious Content Scan"
      enabled: true
      action: "log"
      expression: "(cf.waf.content_scan.has_malicious_obj)"
 
-     # Order 4
-  -  description: "IP Reputation - Threat Scoring"
-     enabled: true
-     action: "log"
-     expression: "(cf.threat_score eq 10)"
-
-     # Order 5
-  -  description: "IP Reputation - CF Managed IP Lists - Log"
-     enabled: true
-     action: "log"
-     expression: "(ip.src in $cf.anonymizer) or (ip.src in $cf.botnetcc) or (ip.src in $cf.malware) or (ip.src in $cf.open_proxies) or (ip.src in $cf.vpn and cf.threat_score gt 0 and cf.threat_score le 25)"
-
-     # Order 6
-  -  description: "IP Reputation - CF Managed IP Lists - Challenge"
-     enabled: true
-     action: "managed_challenge"
-     expression: "(ip.src in $cf.botnetcc) or (ip.src in $cf.malware) or (cf.threat_score gt 25 and cf.threat_score le 50)"
-
-     # Order 7
-  -  description: "IP Reputation - CF Managed IP Lists - Block"
-     enabled: true
-     action: "block"
-     expression: "(ip.src in $cf.botnetcc) or (ip.src in $cf.malware) or (cf.threat_score gt 50 and cf.threat_score le 100 and not ip.geoip.country in {\"AU\"})"
-
-     # Order 8
   -  description: "WAF Attack Scoring - Log"
      enabled: true
      action: "log"
-     expression: "(cf.waf.score ge 50)"
-
-     # Order 9
+     expression: "(cf.waf.score gt 20 and cf.waf.score le 80)"
+ 
   -  description: "WAF Attack Scoring - Challenge"
      enabled: true
      action: "managed_challenge"
-     expression: "(cf.waf.score gt 20 and cf.waf.score le 50)"
-
-     # Order 10
+     expression: "(cf.waf.score gt 5 and cf.waf.score le 20)"
+ 
   -  description: "WAF Attack Scoring - Block"
      enabled: true
      action: "block"
-     expression: "(cf.waf.score gt 0 and cf.waf.score le 20)"
-
-     # Order 11
-  -  description: "Geo Location Block"
-     enabled: true
-     action: "block"
-     expression: "(ip.geoip.country in {\"IR\" \"KP\" \"SY\" \"CU\"} or ip.geoip.subdivision_1_iso_code eq \"UA-14\" or ip.geoip.subdivision_1_iso_code eq \"UA-09\" or ip.geoip.subdivision_1_iso_code eq \"UA-43\")"
-
-     # Order 12
-  -  description: "Groupwide Blacklist"
-     enabled: true
-     action: "block"
-     expression: "(ip.src in $group_wide_blacklist)"
-
-     # Order 13
-  -  description: "Deny POST without Content-Length header"
-     enabled: true
-     action: "block"
-     expression: "(http.request.method eq \"POST\" and http.request.body.size ge 10000)"
-
-     # Order 15
-  -  description: "Verified Bot Categories"
+     expression: "(cf.waf.score gt 0 and cf.waf.score le 5)"
+ 
+  -  description: "Verified Bots"
      enabled: true
      action: "log"
-     expression: "(cf.verified_bot_category in {\"Search Engine Crawler\" \"Search Engine Optimization\" \"Monitoring & Analytics\" \"Advertising & Marketing\" \"Page Preview\" \"Academic Research\" \"Security\" \"Accessibility\" \"Webhooks\" \"Feed Fetcher\" \"AI Crawler\" \"Aggregator\" \"AI Assistant\" \"AI Search\" \"Archiver\" \"Other\"})"
-
-     # Order 16
-  -  description: "NON-Verified Bot Categories - Log"
+     expression: "(cf.bot_management.verified_bot and not cf.bot_management.static_resource)"
+ 
+  -  description: "Sensitive Endpoints - Likely Bots - Challenge"
      enabled: true
-     action: "log"
-     expression: "(http.request.uri.path in {\"/login\" \"/Business/login\" \"/secure/login\" \"/secure/api/login\" \"/netbank/Logon/Logon.aspx\" \"/Net/Documentum/Login.aspx\"} and not cf.verified_bot_category in {\"Search Engine Crawler\" \"Search Engine Optimization\" \"Monitoring & Analytics\" \"Advertising & Marketing\" \"Page Preview\" \"Academic Research\" \"Security\" \"Accessibility\" \"Webhooks\" \"Feed Fetcher\" \"AI Crawler\" \"Aggregator\" \"AI Assistant\" \"Other\" \"AI Search\"} and cf.bot_management.score ge 30)"
-
-     # Order 17
-  -  description: "NON-Verified Bot Categories - Block"
+     action: "managed_challenge"
+     #expression: PLACEHOLDER_SENSITIVE_ENDPOINTS and not cf.bot_management.verified_bot and cf.bot_management.score ge 2 and cf.bot_management.score lt 30 and not cf.bot_management.static_resource and  PLACEHOLDER_USERAGENTS and PLACEHOLDER_API_ENDPOINTS 
+     expression: "((http.request.uri contains \"logon\" or http.request.uri contains \"login\")  and not cf.bot_management.verified_bot and cf.bot_management.score ge 2 and cf.bot_management.score lt 30 and not cf.bot_management.static_resource and not (lower(url_decode(http.request.uri.path)) matches r\"^/ASM/ReceiverServlet.*\"))"
+ 
+  -  description: "Sensitive Endpoints - Definite Bots - Block"
      enabled: true
      action: "block"
-     expression: "(http.request.uri.path in {\"/login\" \"/Business/login\" \"/secure/login\" \"/secure/api/login\" \"/netbank/Logon/Logon.aspx\" \"/Net/Documentum/Login.aspx\"} and not cf.verified_bot_category in {\"Search Engine Crawler\" \"Search Engine Optimization\" \"Monitoring & Analytics\" \"Advertising & Marketing\" \"Page Preview\" \"Academic Research\" \"Security\" \"Accessibility\" \"Webhooks\" \"Feed Fetcher\" \"AI Crawler\" \"Aggregator\" \"AI Assistant\" \"Other\" \"AI Search\"} and cf.bot_management.score gt 0 and cf.bot_management.score lt 30)"
-
-     # Order 18
-  -  description: "Groupwide Whitelist"
-     enabled: false
+     #expression: PLACEHOLDER_SENSITIVE_ENDPOINTS and not cf.bot_management.verified_bot and cf.bot_management.score le 1 and not cf.bot_management.static_resource and  PLACEHOLDER_USERAGENTS and PLACEHOLDER_API_ENDPOINTS 
+     expression: "((http.request.uri contains \"logon\" or http.request.uri contains \"login\")  and not cf.bot_management.verified_bot and cf.bot_management.score le 1 and not cf.bot_management.static_resource and not (lower(url_decode(http.request.uri.path)) matches r\"^/ASM/ReceiverServlet.*\"))"
+ 
+  -  description: "Non-Sensitive Endpoints - Likely Bots - Log"
+     enabled: true
      action: "log"
-     expression: "(ip.src in $group_wide_whitelist)"
+     #expression: not PLACEHOLDER_SENSITIVE_ENDPOINTS and not cf.bot_management.verified_bot and cf.bot_management.score ge 2 and cf.bot_management.score lt 30 and not cf.bot_management.static_resource and  PLACEHOLDER_USERAGENTS and PLACEHOLDER_API_ENDPOINTS 
+     expression: "(not (http.request.uri contains \"logon\" or http.request.uri contains \"login\")  and not cf.bot_management.verified_bot and cf.bot_management.score ge 2 and cf.bot_management.score lt 30 and not cf.bot_management.static_resource and not (lower(url_decode(http.request.uri.path)) matches r\"^/ASM/ReceiverServlet.*\"))"
+ 
+  -  description: "Non-Sensitive Endpoints - Definite Bots - Log"
+     enabled: true
+     action: "log"
+     #expression: not PLACEHOLDER_SENSITIVE_ENDPOINTS and not cf.bot_management.verified_bot and cf.bot_management.score le 1 and not cf.bot_management.static_resource and  PLACEHOLDER_USERAGENTS and PLACEHOLDER_API_ENDPOINTS 
+     expression: "(not (http.request.uri contains \"logon\" or http.request.uri contains \"login\")  and not cf.bot_management.verified_bot and cf.bot_management.score le 1 and not cf.bot_management.static_resource and not (lower(url_decode(http.request.uri.path)) matches r\"^/ASM/ReceiverServlet.*\"))"
 
 waf_rate_limiting_ruleset:
   rules: 
-  -  description: "Brute Force or Credential Stuffing attacks"
+  -  description: "Low Rate POST Logon Request"
      enabled: true
-     action: "log"
+     action: "block"
      period: 10
      requests_per_period: 5
-     mitigation_timeout: 10
+     mitigation_timeout: 600
      requests_to_origin: true
      counting_expression: "(http.response.code eq 403)"
-     expression: "(http.request.method eq \"POST\" and http.request.uri contains \"/login\")"
+     expression: "(http.request.method eq \"POST\" and (http.request.uri contains \"logon\" or http.request.uri contains \"login\"))"
 
-  -  description: "POST Requests"
+  -  description: "POST Requests - Burst"
      enabled: true
-     action: "log"
+     action: "block"
      period: 10
-     requests_per_period: 25
-     mitigation_timeout: 10
-     requests_to_origin: false
-     #counting_expression: "(http.response.code eq 403)"
-     expression: "(not ip.src in $policy_name_rate_control_bypass_list and not ip.src in $rate_control_bypass_global_list and http.request.method eq \"POST\")"
-
-  -  description: "Page View Requests"
-     enabled: true
-     action: "log"
-     period: 10
-     requests_per_period: 45
+     requests_per_period: 50
      mitigation_timeout: 600
-     requests_to_origin: false
-     #counting_expression: "(http.response.code eq 403)"
-     expression: "(not ip.src in $policy_name_rate_control_bypass_list and not ip.src in $rate_control_bypass_global_list and http.request.method ne \"POST\" and not http.request.body.mime in {\" jpg\" \" jpeg\" \" png \" \"gif \" \"bmp\" \" eot\" \" woff\" \" ico\" \" swf\" \" f4v\" \" flv \" \"mp3\" \" mp4 \" \"pdf\" \"js\" \"css\"})"
+     requests_to_origin: true
+     expression: "(http.request.method eq \"POST\")"
 
-  -  description: "Origin Error"
+  -  description: "POST Requests - Average"
      enabled: true
-     action: "log"
+     action: "block"
+     period: 120
+     requests_per_period: 360
+     mitigation_timeout: 600
+     requests_to_origin: true
+     expression: "(http.request.method eq \"POST\")"
+ 
+  -  description: "Page View Requests - Burst"
+     enabled: true
+     action: "block"
      period: 10
-     requests_per_period: 40
-     mitigation_timeout: 10
+     requests_per_period: 180
+     mitigation_timeout: 600
+     requests_to_origin: true
+     expression: "(http.request.method ne \"POST\" and not http.request.body.mime in {\"jpg\" \"jpeg\" \"png\" \"gif\" \"bmp\" \"eot\" \"woff\" \"ico\" \"swf\" \"f4v\" \"flv\" \"mp3\" \"mp4\" \"pdf\" \"js\" \"css\"})"
+
+  -  description: "Page View Requests - Average"
+     enabled: true
+     action: "block"
+     period: 120
+     requests_per_period: 1440
+     mitigation_timeout: 600
+     requests_to_origin: true
+     expression: "(http.request.method ne \"POST\" and not http.request.body.mime in {\"jpg\" \"jpeg\" \"png\" \"gif\" \"bmp\" \"eot\" \"woff\" \"ico\" \"swf\" \"f4v\" \"flv\" \"mp3\" \"mp4\" \"pdf\" \"js\" \"css\"})"
+  
+  -  description: "Origin Error - Burst"
+     enabled: true
+     action: "block"
+     period: 10
+     requests_per_period: 80
+     mitigation_timeout: 600
      requests_to_origin: true
      counting_expression: "(http.response.code in {400 401 402 403 404 405 406 407 408 409 410 500 501 502 503 504})"
-     expression: "(not ip.src in $policy_name_rate_control_bypass_list and not ip.src in $rate_control_bypass_global_list)"
+     expression: "(http.request.method in {\"GET\" \"POST\" \"PUT\" \"HEAD\"})"
 
-  -  description: "SLOW POST Requests"
+  -  description: "Origin Error - Average"
      enabled: true
-     action: "log"
-     period: 60
+     action: "block"
+     period: 120
      requests_per_period: 600
      mitigation_timeout: 600
      requests_to_origin: true
-     #counting_expression: "(http.response.code eq 403)"
-     expression: "(http.request.method eq \"POST\" and http.request.body.size eq 10)"
+     characteristics: ["cf.unique_visitor_id", "cf.colo.id"]
+     counting_expression: "(http.response.code in {400 401 402 403 404 405 406 407 408 409 410 500 501 502 503 504})"
+     expression: "(http.request.method in {\"GET\" \"POST\" \"PUT\" \"HEAD\"})"
+ 
+log_custom_fields:
+   description: "Set Logpush custom fields for HTTP requests"
+   enabled: true
+   action: "log_custom_field"
+   expression: "true"
+   action_parameters:
+      request_fields:
+      - "true-client-ip"
+      - "true-client-port"
+      - "custom-header"
+      - "cf-cert-revoked"
+      - "cf-cert-verified"
+      - "cf-cert-presented"
+      - "cf-cert-issuer-dn"
+      - "cf-cert-subject-dn"
+      - "cf-cert-issuer-dn-rfc2253"
+      - "cf-cert-subject-dn-rfc2253"
+      - "cf-cert-issuer-dn-legacy"
+      - "cf-cert-subject-dn-legacy"
+      - "cf-cert-serial"
+      - "cf-cert-issuer-serial"
+      - "cf-cert-fingerprint-sha256"
+      - "cf-cert-fingerprint-sha1"
+      - "cf-cert-not-before"
+      - "cf-cert-not-after"
+      - "cf-cert-ski"
+      - "cf-cert-issuer-ski"
+      - "exposed-credential-check"
+      - "sslclientcertthumbprint"
+      - "sslclientcertcn"
 
+logpush_job_settings_splunk:
+  - name: "http-requests-log"
+    #dataset values can be firewall_events, http_requests
+    dataset: http_requests
+    enabled: false
+    splunk_source_type: "cloudflare:json"
+    splunk_destination_url: "http-inputs-cba-npd.splunkcloud.com:443/services/collector/raw"
+    splunk_insecure_skip_verify: false
+    #Please do not change batch_prefix, batch_suffix or record_prefix
+    # batch_prefix:
+    # batch_suffix:
+    # record_prefix:
+    # The record_suffix should include the correct logsource
+    output_record_suffix: ",\"logsource\":\"nonprod_cba_zone\"}\n"
+    output_type: ndjson #ndjson, csv
+    output_timestamp_format: rfc3339  #unixnano, unix, rfc3339
+    output_cve20214428: false
+    output_field_names: [
+      "BotDetectionIDs",
+      "BotScore",
+      "BotScoreSrc",
+      "BotTags",
+      "BotDetectionTags",
+      "ClientCity",
+      "ClientLatitude",
+      "ClientLongitude",
+      "ContentScanObjSizes",
+      "JA4",
+      "JA4Signals",
+      "LeakedCredentialCheckResult",
+      "ParentRayID",
+      "RayID",
+      "WorkerScriptName",
+      "WorkerSubrequest",
+      "WorkerSubrequestCount",
+      "ZoneName",
+      "CacheCacheStatus",
+      "CacheReserveUsed",
+      "CacheResponseBytes",
+      "CacheResponseStatus",
+      "CacheTieredFill",
+      "ClientASN",
+      "ClientCountry",
+      "ClientDeviceType",
+      "ClientIP",
+      "ClientIPClass",
+      "ClientRegionCode",
+      "ClientRequestBytes",
+      "ClientRequestHost",
+      "ClientRequestMethod",
+      "ClientRequestPath",
+      "ClientRequestProtocol",
+      "ClientRequestReferer",
+      "ClientRequestScheme",
+      "ClientRequestSource",
+      "ClientRequestURI",
+      "ClientRequestUserAgent",
+      "ClientSrcPort",
+      "ClientXRequestedWith",
+      "Cookies",
+      "EdgeRequestHost",
+      "RequestHeaders",
+      "ClientMTLSAuthCertFingerprint",
+      "ClientMTLSAuthStatus",
+      "ClientSSLCipher",
+      "ClientSSLProtocol",
+      "OriginSSLProtocol",
+      "ClientTCPRTTMs",
+      "EdgeEndTimestamp",
+      "EdgeStartTimestamp",
+      "EdgeTimeToFirstByteMs",
+      "OriginDNSResponseTimeMs",
+      "OriginRequestHeaderSendDurationMs",
+      "OriginResponseDurationMs",
+      "OriginResponseHeaderReceiveDurationMs",
+      "OriginResponseTime",
+      "OriginTCPHandshakeDurationMs",
+      "OriginTLSHandshakeDurationMs",
+      "WorkerCPUTime",
+      "WorkerWallTimeUs",
+      "ContentScanObjResults",
+      "ContentScanObjTypes",
+      "EdgePathingSrc",
+      "EdgePathingStatus",
+      "JA3Hash",
+      "SecurityAction",
+      "SecurityActions",
+      "SecurityRuleDescription",
+      "SecurityRuleID",
+      "SecurityRuleIDs",
+      "SecuritySources",
+      "WAFAttackScore",
+      "WAFFlags",
+      "WAFMatchedVar",
+      "WAFRCEAttackScore",
+      "WAFSQLiAttackScore",
+      "WAFXSSAttackScore",
+      "EdgeCFConnectingO2O",
+      "EdgeColoCode",
+      "EdgeColoID",
+      "EdgeServerIP",
+      "SmartRouteColoID",
+      "UpperTierColoID",
+      "EdgePathingOp",
+      "EdgeResponseBodyBytes",
+      "EdgeResponseBytes",
+      "EdgeResponseCompressionRatio",
+      "EdgeResponseContentType",
+      "EdgeResponseStatus",
+      "OriginIP",
+      "OriginResponseBytes",
+      "OriginResponseHTTPExpires",
+      "OriginResponseHTTPLastModified",
+      "OriginResponseStatus",
+      "ResponseHeaders",
+      "WorkerStatus"
+      ]
+    
+  - name: "firewall-events-log"
+    #dataset values can be firewall_events, http_requests
+    dataset: firewall_events
+    enabled: false
+    splunk_source_type: "cloudflare:zone_firewall"
+    splunk_destination_url: "http-inputs-cba-npd.splunkcloud.com:443/services/collector/raw"
+    splunk_insecure_skip_verify: false
+    #Please do not change batch_prefix, batch_suffix or record_prefix
+    # batch_prefix:
+    # batch_suffix:
+    # record_prefix:
+    # The record_suffix should include the correct logsource
+    output_record_suffix: ",\"logsource\":\"nonprod_cba_zone\"}\n"
+    output_type: ndjson #ndjson, csv
+    output_timestamp_format: rfc3339  #unixnano, unix, rfc3339
+    output_cve20214428: false
+    output_field_names: [
+      "Action",
+      "Datetime",
+      "Description",
+      "Kind",
+      "MatchIndex",
+      "Metadata",
+      "OriginatorRayID",
+      "Ref",
+      "RuleID",
+      "Source",
+      "ClientASNDescription",
+      "ClientRefererHost",
+      "ClientRefererQuery",
+      "ClientRefererPath",
+      "ClientRefererScheme",
+      "ClientRequestQuery",
+      "BotDetectionIDs",
+      "BotScore",
+      "BotScoreSrc",
+      "BotTags",
+      "BotDetectionTags",
+      "ClientCity",
+      "ClientLatitude",
+      "ClientLongitude",
+      "ContentScanObjSizes",
+      "JA4",
+      "JA4Signals",
+      "LeakedCredentialCheckResult",
+      "ParentRayID",
+      "RayID",
+      "WorkerSubrequest",
+      "WorkerSubrequestCount",
+      "ZoneName",
+      "CacheCacheStatus",
+      "CacheReserveUsed",
+      "CacheResponseBytes",
+      "CacheResponseStatus",
+      "CacheTieredFill",
+      "ClientASN",
+      "ClientCountry",
+      "ClientDeviceType",
+      "ClientIP",
+      "ClientIPClass",
+      "ClientRegionCode",
+      "ClientRequestBytes",
+      "ClientRequestHost",
+      "ClientRequestMethod",
+      "ClientRequestPath",
+      "ClientRequestProtocol",
+      "ClientRequestReferer",
+      "ClientRequestScheme",
+      "ClientRequestSource",
+      "ClientRequestURI",
+      "ClientRequestUserAgent",
+      "ClientSrcPort",
+      "ClientXRequestedWith",
+      "EdgeRequestHost",
+      "RequestHeaders",
+      "ClientMTLSAuthCertFingerprint",
+      "ClientMTLSAuthStatus",
+      "ClientSSLCipher",
+      "ClientSSLProtocol",
+      "OriginSSLProtocol",
+      "ClientTCPRTTMs",
+      "EdgeEndTimestamp",
+      "EdgeStartTimestamp",
+      "EdgeTimeToFirstByteMs",
+      "OriginDNSResponseTimeMs",
+      "OriginRequestHeaderSendDurationMs",
+      "OriginResponseDurationMs",
+      "OriginResponseHeaderReceiveDurationMs",
+      "OriginResponseTime",
+      "OriginTCPHandshakeDurationMs",
+      "OriginTLSHandshakeDurationMs",
+      "WorkerCPUTime",
+      "WorkerWallTimeUs",
+      "ContentScanObjResults",
+      "ContentScanObjTypes",
+      "EdgePathingSrc",
+      "EdgePathingStatus",
+      "JA3Hash",
+      "SecurityAction",
+      "SecurityActions",
+      "SecurityRuleDescription",
+      "SecurityRuleID",
+      "SecurityRuleIDs",
+      "SecuritySources",
+      "WAFAttackScore",
+      "WAFFlags",
+      "WAFMatchedVar",
+      "WAFRCEAttackScore",
+      "WAFSQLiAttackScore",
+      "WAFXSSAttackScore",
+      "EdgeCFConnectingO2O",
+      "EdgeColoCode",
+      "EdgeColoID",
+      "EdgeServerIP",
+      "SmartRouteColoID",
+      "UpperTierColoID",
+      "EdgePathingOp",
+      "EdgeResponseBodyBytes",
+      "EdgeResponseBytes",
+      "EdgeResponseCompressionRatio",
+      "EdgeResponseContentType",
+      "EdgeResponseStatus",
+      "OriginIP",
+      "OriginResponseBytes",
+      "OriginResponseHTTPExpires",
+      "OriginResponseHTTPLastModified",
+      "OriginResponseStatus",
+      "ResponseHeaders",
+      "WorkerStatus&timestamps"
+      ]
+
+logpush_pipeline_job_settings:
+   #name: valid names zone-prod/staging/test/poc-http-requests
+   - name: "pipeline-zone-prod-http-requests"
+     #dataset values can be firewall_events, http_requests
+     dataset: http_requests
+     enabled: true
+     destination_conf_key: logpush_pipeline_dest_conf
+     #Please do not change batch_prefix, batch_suffix or record_prefix
+     # batch_prefix:
+     # batch_suffix:
+     # record_prefix:
+     # The record_suffix should include the correct logsource
+     #<logsource Name to be updated> can be prod/test/staging/poc_cba/bwa_zone e.g. staging_cba_zone
+     output_record_suffix: ",\"logsource\":\"<logsource Name to be updated>\", \"type\":\"cloudflare:json\"}\n"
+     output_type: ndjson #ndjson, csv
+     output_timestamp_format: rfc3339 #unixnano, unix, rfc3339
+     output_cve20214428: false
+     output_field_names:
+        [
+           "CacheCacheStatus",
+           "BotDetectionIDs",
+           "BotScore",
+           "BotScoreSrc",
+           "BotTags",
+           "BotDetectionTags",
+           "ClientCity",
+           "ContentScanObjSizes",
+           "JA4",
+           "JA4Signals",
+           "ParentRayID",
+           "RayID",
+           "WorkerScriptName",
+           "ZoneName",
+           "ClientASN",
+           "ClientCountry",
+           "ClientDeviceType",
+           "ClientIP",
+           "ClientIPClass",
+           "ClientRegionCode",
+           "ClientRequestBytes",
+           "ClientRequestHost",
+           "ClientRequestMethod",
+           "ClientRequestPath",
+           "ClientRequestProtocol",
+           "ClientRequestReferer",
+           "ClientRequestScheme",
+           "ClientRequestSource",
+           "ClientRequestURI",
+           "ClientRequestUserAgent",
+           "ClientSrcPort",
+           "Cookies",
+           "EdgeRequestHost",
+           "RequestHeaders",
+           "ClientMTLSAuthCertFingerprint",
+           "ClientMTLSAuthStatus",
+           "ClientSSLCipher",
+           "ClientSSLProtocol",
+           "OriginSSLProtocol",
+           "EdgeEndTimestamp",
+           "EdgeStartTimestamp",
+           "OriginResponseTime",
+           "ContentScanObjResults",
+           "ContentScanObjTypes",
+           "EdgePathingSrc",
+           "EdgePathingStatus",
+           "JA3Hash",
+           "SecurityAction",
+           "SecurityActions",
+           "SecurityRuleDescription",
+           "SecurityRuleID",
+           "SecurityRuleIDs",
+           "SecuritySources",
+           "WAFAttackScore",
+           "WAFRCEAttackScore",
+           "WAFSQLiAttackScore",
+           "WAFXSSAttackScore",
+           "EdgeColoCode",
+           "EdgePathingOp",
+           "EdgeResponseBodyBytes",
+           "EdgeResponseBytes",
+           "EdgeResponseContentType",
+           "EdgeResponseStatus",
+           "OriginIP",
+           "OriginResponseStatus",
+           "ResponseHeaders",
+           "ClientLatitude",
+           "ClientLongitude",
+           "OriginResponseDurationMs",
+        ]
+     #name: valid names zone-prod/staging/poc-firewall-events
+   - name: "pipeline-zone-<env>-firewall-events"
+     #dataset values can be firewall_events, http_requests
+     dataset: firewall_events
+     enabled: true
+     destination_conf_key: logpush_pipeline_dest_conf
+     max_upload_bytes: 50000000
+     #Please do not change batch_prefix, batch_suffix or record_prefix
+     # batch_prefix:
+     # batch_suffix:
+     # record_prefix:
+     # The record_suffix should include the correct logsource
+     #<logsource Name to be updated> can be prod/test/staging/poc_cba/bwa_zone e.g. staging_cba_zone
+     output_record_suffix: ",\"logsource\":\"<logsource Name to be updated>\", \"type\":\"cloudflare:zone_firewall\"}\n"
+     output_type: ndjson #ndjson, csv
+     output_timestamp_format: rfc3339 #unixnano, unix, rfc3339
+     output_cve20214428: false
+     output_field_names:
+        [
+           "Action",
+           "ClientASN",
+           "ClientASNDescription",
+           "ClientCountry",
+           "ClientIP",
+           "ClientIPClass",
+           "ClientRefererHost",
+           "ClientRefererPath",
+           "ClientRefererQuery",
+           "ClientRefererScheme",
+           "ClientRequestHost",
+           "ClientRequestMethod",
+           "ClientRequestPath",
+           "ClientRequestProtocol",
+           "ClientRequestQuery",
+           "ClientRequestScheme",
+           "ClientRequestUserAgent",
+           "ContentScanObjResults",
+           "ContentScanObjSizes",
+           "ContentScanObjTypes",
+           "Datetime",
+           "Description",
+           "EdgeColoCode",
+           "EdgeResponseStatus",
+           "Kind",
+           "Metadata",
+           "OriginatorRayID",
+           "RayID",
+           "RuleID",
+           "Source",
+        ]

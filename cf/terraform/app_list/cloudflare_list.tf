@@ -1,8 +1,5 @@
 # cloudflare_list.tf
 # Ref: https://registry.terraform.io/providers/cloudflare/cloudflare/latest/docs/resources/list
-# Ref: https://developer.hashicorp.com/terraform/language/meta-arguments/for_each
-# Ref: https://developer.hashicorp.com/terraform/language/expressions/dynamic-blocks
-# Ref: https://www.infinitypp.com/terraform/terraform-for_each-over-tuples/
 
 # The cloudflare_list can be of 4 kinds as per the above reference - IP addresses, ASNs, hostnames or redirects
 

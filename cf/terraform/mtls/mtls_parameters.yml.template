@@ -1,0 +1,17 @@
+session_duration: 24h
+
+domain: "autopoc1.evolveatcommbank.com.au/mtls" # optional. default to zone name
+
+leaf_common_names:  # list of common names to validate against. Will be used to create poloicies for this application
+  - friendlyname: Digicert
+    common_name: common_name
+  - friendlyname: Digicert2
+    common_name: common_name2
+
+certs:  # list of mtls bundles to upload. filename must match the name of the cert in the `bundles` directory
+  - name: "cert1"  # friendly name of this cert. Has to be unique
+    ca_chain_filename: "DigiCertG5TLSECCSHA3842021CA1-1.crt.pem"         # only the filename. Must be placed inside /mtls/bundles folder
+  - name: "cert2"  # friendly name of this cert. Has to be unique
+    ca_chain_filename: "DigiCertG5RSA4096SHA3842021CA1-1.crt.pem"         # only the filename. Must be placed inside /mtls/bundles folder
+
+authenticated_origin_pulls_settings: true

@@ -1,14 +1,46 @@
-policy_name_rate_control_bypass_list :
-  - "1.1.1.1"
-  - "4.4.4.4"
-rate_control_bypass_global_list :
-  - "4.4.4.4"
-  - "5.5.5.5"
-group_wide_whitelist :
-  - "1.1.1.1"
-  - "2.2.2.2"
-group_wide_blacklist :
-  - "1.1.1.1"
-  - "2.2.2.2"
-  - "8.8.6.6"
-  - "8.8.8.8"
+cf_ip_lists:
+  - name: "cloudflare_platform_wide_ip_bypass"
+    description: "Cloudflare Platform Wide IP Bypass"
+    ip:
+      - "1.1.1.1"
+      - "4.4.4.4"
+  - name: "cloudflare_platform_wide_ip_blacklist"
+    description: "Cloudflare Platform Wide IP Blacklist"
+    ip:
+      - "1.1.1.1"
+      - "2.2.2.2"
+      - "8.8.6.6"
+      - "8.8.8.8"
+  - name: "cloudflare_platform_wide_nonprd_ip_whitelist"
+    description: "Cloudflare Platform Wide NonProd IP Whitelist"
+    ip:
+      - "3.230.49.216"
+      - "44.194.123.141"
+      - "34.197.161.235"
+cf_asn_lists:
+  - name: cloudflare_platform_wide_asn_blacklist
+    description: "Cloudflare Platform Wide ASN Blacklist"
+    asn:
+      - "677"
+      - "989"
+
+
+noname_configs:
+  script_name: noname-service
+  script_file: noname_worker.js.template
+  plain_text_binding:
+    - name: ENGINE_URL
+      text: https://rea3.aph.staging.commbank.com.au/engine?structure=base64-payload
+    - name: SOURCE_INDEX
+      text: 5
+    - name: SOURCE_TYPE
+      text: 45
+    - name: VERSION
+      text: 3.3.0
+
+worker_configs:
+  - script_name: worker-service
+    script_file: worker.js.template
+    plain_text_binding:
+      - name: VERSION
+        text: 1.0.0

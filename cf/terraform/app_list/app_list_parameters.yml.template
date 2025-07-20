@@ -1,0 +1,25 @@
+cf_ip_lists:
+  - name: edge_security_ratecontrol_ip_bypass
+    description: "App specific Rate Control IP Bypass"
+    ip:
+      - "2.2.2.2"
+      - "3.3.3.3"
+
+  - name: edge_security_ip_blacklist
+    description: "App Specific IP Blacklist"
+    ip:
+      - "4.4.4.4"
+      - "5.5.5.5"
+
+  - name: edge_security_nonprd_ip_whitelist
+    description: "App specific NonProd IP Whitelist"
+    ip:
+      - "6.6.6.6"
+      - "7.7.7.7"
+      - "8.8.8.0/24"
+
+cf_asn_lists:
+  - name: edge_security_asn_blacklist
+    description: "App Specific ASN Blacklist"
+    asn: #dummy ASN
+      - "123456789"

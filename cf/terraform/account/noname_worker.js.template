@@ -1,0 +1,174 @@
+import { WorkerEntrypoint } from 'cloudflare:workers';
+
+let ENGINE_URL = '';
+let SOURCE_TYPE = '';
+let SOURCE_INDEX = '';
+let SOURCE_KEY = '';
+let VERSION = '';
+const MAX_BODY_SIZE = 1048576;
+
+export default class extends WorkerEntrypoint {
+    async fetch(request) {
+        this.ctx.passThroughOnException();
+        ENGINE_URL = this.env.ENGINE_URL;
+        SOURCE_TYPE = this.env.SOURCE_TYPE;
+        SOURCE_INDEX = this.env.SOURCE_INDEX;
+        SOURCE_KEY = this.env.SOURCE_KEY;
+        VERSION = this.env.VERSION;
+
+        // Handle WebSocket connections directly
+        if (request.headers.get('upgrade') === 'websocket') {
+            return fetch(request);
+        }
+
+        // Handle HTTP requests
+        return handleRequest(request, this.ctx);
+    }
+    async handleWorkerRequest(...args) {
+        await prepareAndSendRequest(...args, this.ctx);
+        return true;
+    }
+
+}
+
+// Utility to parse URL and derive properties
+const getUrlParams = (requestUrl) => {
+    const url = new URL(requestUrl);
+    const urlParams = url.searchParams.toString();
+    const destPort = url.port || (url.protocol === 'https:' ? 443 : 80);
+    return { url, urlParams: urlParams ? `?${urlParams}` : '', destPort };
+};
+ 
+// Send HTTP Request
+const sendRequest = async (packetPair, ctx) => {
+    const body = JSON.stringify(packetPair);
+    ctx.waitUntil(
+        fetch(ENGINE_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body,
+        }),
+    )
+ 
+};
+ 
+// Fetch and process the body of a payload
+const getBody = async (payload) => {
+    try {
+        const payloadArrayBuffer = await payload.arrayBuffer();
+        return btoa(String.fromCharCode(...new Uint8Array(payloadArrayBuffer)));
+    } catch (error) {
+        return '';
+    }
+};
+ 
+// Decide whether to gather the body
+const shouldGatherBody = (headers, statusCode) => {
+    const contentLength = headers['content-length'];
+    if (contentLength == null || Number(contentLength) > MAX_BODY_SIZE) {
+        return false;
+    }
+ 
+    const contentType = headers['content-type'] ?? '';
+    if (contentType.includes('stream')) {
+        return false;
+    }
+ 
+    return !(statusCode != null && statusCode == 101);
+};
+ 
+const handleRequest = async (request, ctx) => {
+    const requestTs = Date.now();
+    const requestHeaders = Object.fromEntries(request.headers);
+ 
+    let requestClone = null;
+    if (shouldGatherBody(requestHeaders)) {
+        requestClone = request.clone();
+    }
+ 
+    const response = await fetch(request);
+    const responseTs = Date.now();
+    const responseHeaders = Object.fromEntries(response.headers);
+    const statusCode = response.status;
+ 
+    let responseClone = null;
+    if (shouldGatherBody(responseHeaders, statusCode)) {
+        responseClone = response.clone();
+    }
+ 
+    ctx.waitUntil(
+        prepareAndSendRequest(
+            requestTs,
+            request.cf || {},
+            request.method,
+            request.url,
+            requestHeaders,
+            requestClone,
+            responseTs,
+            responseHeaders,
+            statusCode,
+            responseClone,
+            ctx,
+        ),
+    );
+ 
+    return response;
+};
+ 
+const prepareAndSendRequest = async (
+    requestTs,
+    requestCf,
+    requestMethod,
+    requestUrl,
+    requestHeaders,
+    requestClone,
+    responseTs,
+    responseHeaders,
+    statusCode,
+    responseClone,
+    ctx,
+) => {
+    const { url, urlParams, destPort } = getUrlParams(requestUrl);
+ 
+    const requestBody = requestClone ? await getBody(requestClone) : '';
+    const responseBody = responseClone ? await getBody(responseClone) : '';
+ 
+    const packetPair = {
+        ip: {
+            v: 4,
+            src:
+                requestHeaders['cf-connecting-ip'] ||
+                requestHeaders['x-real-ip'] ||
+                '0.0.0.0',
+            dst: '1.1.1.1',
+        },
+        tcp: {
+            src: 0,
+            dst: destPort,
+        },
+        http: {
+            v: requestCf.httpProtocol?.replace('HTTP/', '') || '1.1',
+            request: {
+                ts: requestTs,
+                method: requestMethod,
+                url: url.pathname + urlParams,
+                headers: requestHeaders,
+                body: requestBody,
+            },
+            response: {
+                ts: responseTs,
+                status: statusCode,
+                headers: responseHeaders,
+                body: responseBody,
+            },
+        },
+        source: {
+            type: SOURCE_TYPE,
+            index: SOURCE_INDEX,
+            key: SOURCE_KEY,
+            version: VERSION,
+        },
+    };
+ 
+    ctx.waitUntil(sendRequest(packetPair, ctx));
+};
