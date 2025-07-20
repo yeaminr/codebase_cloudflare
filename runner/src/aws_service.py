@@ -1,16 +1,20 @@
-import boto3
+"""
+Module to manage CBA AWS Route53 records.
+"""
+
 import os
 import logging
-from runner.src import exceptions
-from runner.src import api_constant
+import boto3
+from runner.src import exceptions, api_constant, helpers
+from runner.src.model import InputModel
 
 logger = logging.getLogger(__name__)
 
-dev_client = boto3.client(
+nonprod_client = boto3.client(
     "route53",
     verify=not os.environ.get("LOCAL", False),
-    aws_access_key_id=api_constant.dev_txt_aws_access_key_id,
-    aws_secret_access_key=api_constant.dev_txt_aws_secret_access_key,
+    aws_access_key_id=api_constant.nonprod_txt_aws_access_key_id,
+    aws_secret_access_key=api_constant.nonprod_txt_aws_secret_access_key,
 )
 prod_client = boto3.client(
     "route53",
@@ -57,7 +61,7 @@ def change_resource_record_sets(
     if env == "prod":
         client = prod_client
     else:
-        client = dev_client
+        client = nonprod_client
     try:
         response = client.change_resource_record_sets(
             HostedZoneId=hosted_zone_id,
@@ -104,7 +108,7 @@ def get_hosted_zone_id_by_domain(domain, env):
     if env == "prod":
         client = prod_client
     else:
-        client = dev_client
+        client = nonprod_client
     response = client.list_hosted_zones_by_name(DNSName=domain, MaxItems="1")
     if "HostedZones" in response:
         for hosted_zone in response["HostedZones"]:
@@ -129,7 +133,7 @@ def check_record_exist(hosted_zone_id, record_name, record_type, env):
     if env == "prod":
         client = prod_client
     else:
-        client = dev_client
+        client = nonprod_client
     paginator = client.get_paginator("list_resource_record_sets")
     page_iterator = paginator.paginate(HostedZoneId=hosted_zone_id)
     for page in page_iterator:
@@ -149,7 +153,9 @@ def check_record_exist(hosted_zone_id, record_name, record_type, env):
     return False
 
 
-def process_txt_record(domain_name, record_name, record_value) -> None:
+def process_txt_record(
+    input_model: InputModel, record_name: str, record_value: str, cwd: str
+) -> None:
     """
     Process the TXT record.
     If FQDN found in prod hosted zone,
@@ -158,9 +164,9 @@ def process_txt_record(domain_name, record_name, record_value) -> None:
             If TXT record not exists Add the TXT record and return
         If NS record not exists, raise AWSServiceRoute53RecordNotFoundException
     If FQDN not found in prod hosted zone,
-        If FQDN found in dev hosted zone,
+        If FQDN found in nonprod hosted zone,
             Do NS record check and TXT check as above
-        If FQDN not found in dev hosted zone,
+        If FQDN not found in nonprod hosted zone,
             Go to next level domain and repeat the process
             If FQDN not found in any level, raise AWSServiceRoute53RecordNotFoundException
 
@@ -172,19 +178,22 @@ def process_txt_record(domain_name, record_name, record_value) -> None:
     Raises:
         AWSServiceRoute53InvalidInputException: If the required variables are empty.
     """
+    domain_name = input_model.fqdn
+    dns_env = get_aws_hosted_zone_env(
+        input_model.environment.value, cwd
+    )
     if not domain_name or not record_name or not record_value:
         raise exceptions.AWSServiceRoute53InvalidInputException(
             "Required variables domain_name, record_name or record_value are empty"
         )
-    while True:
-        for env in ["prod", "dev"]:
-            logger.info("Processing domain %s in env %s", domain_name, env)
-            if update_txt_record_by_env(domain_name, record_name, record_value, env):
-                return
-        domain_parts = domain_name.split(".")
-        if len(domain_parts) <= 3:
-            break
-        domain_name = ".".join(domain_parts[-(len(domain_parts) - 1) :])
+    domain_parts = domain_name.split(".")
+    for i in range(len(domain_parts)):
+        updated_fqdn = ".".join(domain_parts[i:])
+        logger.info("Processing domain %s in env %s", updated_fqdn, dns_env)
+        if update_txt_record_by_env(
+            updated_fqdn, record_name, record_value, dns_env
+        ):
+            return
     raise exceptions.AWSServiceRoute53RecordNotFoundException(
         f"NS record for {domain_name} not found in any of the hosted zone"
     )
@@ -245,3 +254,29 @@ def update_txt_record_by_env(domain_name, record_name, record_value, env) -> boo
                 f"NS record for {domain_name} not found in the hosted zone"
             )
     return False
+
+
+def get_aws_hosted_zone_env(env: str, cwd: str) -> str:
+    """
+    Get the AWS hosted zone environment.
+
+    Args:
+        env (str): The environment.
+
+    Returns:
+        str: The AWS hosted zone environment.
+    """
+    env_mapping = api_constant.AWS_ENV_MAPPING
+    if env in env_mapping:
+        if env in ["tst", "stg"]:
+            if not cwd:
+                raise exceptions.AWSServiceRoute53InvalidInputException(
+                    "Current working directory (cwd) is required for tst and stg environments."
+                )
+            zone_parameters = helpers.get_parameters_yaml(cwd, "zone")
+            if zone_parameters and "dns_env" in zone_parameters:
+                return zone_parameters["dns_env"]
+        return env_mapping[env]
+    raise exceptions.AWSServiceRoute53InvalidInputException(
+        f"Invalid environment: {env}. Valid environments are {list(env_mapping.keys())}."
+    )
