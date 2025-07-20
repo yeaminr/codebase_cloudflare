@@ -1,5 +1,6 @@
 import os
 import pytest
+from runner.src import helpers
 from runner.src import terraform_service
 from runner.src import api_constant
 from runner.src import exceptions
@@ -76,46 +77,56 @@ def test_terraform_init_plan_action_output(monkeypatch) -> None:
     monkeypatch.setattr(
         terraform_service, "create_backend_file", create_backend_file_mock
     )
-    monkeypatch.setattr(
-        terraform_service, "run_terraform_command", run_terraform_command_mock
-    )
     # Test for init action
+    monkeypatch.setattr(
+        terraform_service, "run_terraform_command", lambda x, y: ( 0, "success", None)
+    )
     assert terraform_service.terraform_init(
         "working_directory", "example.com.au", "zone"
     ) == (0, "success", None)
-    # Test for plan action
-    assert terraform_service.terraform_plan("working_directory", "account_id") == (
-        0,
-        "success",
-        None,
+    # Test init reconfigure action
+    monkeypatch.setattr(
+        terraform_service, "run_terraform_command", lambda x, y: ( 0, "success", None)
     )
-    # Test for apply action
-    assert terraform_service.terraform_apply("working_directory", "account_id") == (
-        0,
-        "success",
-        None,
-    )
+    assert terraform_service.terraform_init_reconfigure(
+        "working_directory", "example.com.au", "zone"
+    ) == (0, "success", None)
     # Test for output action
     assert terraform_service.terraform_output(
         "working_directory",
         "name",
     ) == (0, "success", None)
+    # Test for plan action
+    monkeypatch.setattr(
+        terraform_service, "run_terraform_command", lambda x, y, z: ( 0, "success", None)
+    )
+    assert terraform_service.terraform_plan("working_directory", "account_id", "cf_api_token") == (
+        0,
+        "success",
+        None,
+    )
+    # Test for apply action
+    assert terraform_service.terraform_apply("working_directory", "account_id", "cf_api_token") == (
+        0,
+        "success",
+        None,
+    )
 
 
 def test_run_success(monkeypatch) -> None:
     monkeypatch.setattr(wd, "copy_tf_files", copy_tf_files_mock)
     monkeypatch.setattr(
-        terraform_service, "terraform_init", run_terraform_init_command_mock
+        terraform_service, "terraform_init", lambda x, y, z: (0, "success", None)
     )
     monkeypatch.setattr(
-        terraform_service, "terraform_plan", run_terraform_plan_command_mock
+        terraform_service, "terraform_plan", lambda x, y, z: (0, "success", None)
     )
 
-    monkeypatch.setattr(api_constant, "cf_initial_api_token", "cf_initial_api_token")
+    monkeypatch.setattr(helpers, "check_initial_token", check_initial_token_mock)
     monkeypatch.setattr(
         cloudflare_token_service,
         "set_cloudflare_scoped_token",
-        set_cloudflare_scoped_token_mock,
+        lambda x : (["tokenid"], "dummy_token"),
     )
     monkeypatch.setattr(
         cloudflare_token_service,
@@ -123,7 +134,7 @@ def test_run_success(monkeypatch) -> None:
         delete_all_tokens_mock,
     )
     monkeypatch.setattr(
-        terraform_service, "terraform_apply", run_terraform_apply_command_mock
+        terraform_service, "terraform_apply", lambda x, y, z: (0, "success", None)
     )
     input_model = InputModel(
         environment="dev", fqdn="example.com.au", config_type="zone", action="apply"
@@ -136,7 +147,7 @@ def test_run_success(monkeypatch) -> None:
 
     # Test for main when plan with returncode other than 0
     monkeypatch.setattr(
-        terraform_service, "terraform_plan", run_terraform_command_error_mock
+        terraform_service, "terraform_plan", lambda x, y, z: (1, "Failed", None)
     )
     with pytest.raises(exceptions.TerraformServiceOperationException):
         terraform_service.run(input_model, "working_directory")
@@ -150,10 +161,59 @@ def test_run_success(monkeypatch) -> None:
 
     # Test for main when apply with returncode other than 0
     monkeypatch.setattr(
-        terraform_service, "terraform_apply", run_terraform_command_error_mock
+        terraform_service, "terraform_apply", lambda x, y, z: (1, "Failed", None)
     )
     with pytest.raises(exceptions.TerraformServiceOperationException):
         terraform_service.run(input_model, "working_directory")
+
+
+def test_cf_terraforming_success(monkeypatch) -> None:
+    monkeypatch.setenv("CLOUDFLARE_API_TOKEN", "token")
+    monkeypatch.setattr(helpers, "get_zone_id", lambda x, y: "zone_id")
+    monkeypatch.setattr(
+        terraform_service, "terraform_init", lambda x, y, z: (0, "success", None)
+    )
+    monkeypatch.setattr(
+        terraform_service, "terraform_init_reconfigure", lambda x, y, z: (0, "success", None)
+    )
+    monkeypatch.setattr(terraform_service, "create_providers_file", lambda x: None)
+    monkeypatch.setattr(
+        terraform_service, "run_terraform_command", run_terraform_command_import_mock
+    )
+    monkeypatch.setattr(
+        cloudflare_token_service,
+        "set_cloudflare_scoped_token",
+        lambda x : (["tokenid"], "dummy_token"),
+    )
+    monkeypatch.setattr(
+        cloudflare_token_service,
+        "delete_all_tokens",
+        delete_all_tokens_mock,
+    )
+    monkeypatch.setattr(helpers, "check_initial_token", check_initial_token_mock)
+
+    # test single resource
+    input_model = InputModel(
+        environment="dev", fqdn="example.com.au", config_type="zone", action="plan"
+    )
+    output = terraform_service.cf_terraforming(
+        input_model, "cloudflare_record"
+    )
+    assert "cloudflare_record" in output.keys()
+    assert output["cloudflare_record"]["import_output"] == "terraform import x y/id1\nterraform import x y/id2"
+    assert output["cloudflare_record"]["new_resources"] == []
+
+    # test all resource
+    input_model = InputModel(
+        environment="dev", fqdn="example.com.au", config_type="zone", action="plan"
+    )
+    output = terraform_service.cf_terraforming(
+        input_model, "all"
+    )
+    for resource in api_constant.CF_TERRAFORMING_RESOURCES:
+        assert resource in output.keys()
+        assert output[resource]["import_output"] == "terraform import x y/id1\nterraform import x y/id2"
+        assert output[resource]["new_resources"] == []
 
 
 # Mocks
@@ -164,27 +224,8 @@ def get_backend_key_mock(zone_name: str, config_type: str) -> str:
 def create_backend_file_mock(working_directory: str, state_key: str) -> None:
     return None
 
-
-def run_terraform_init_command_mock(
-    working_directory: str, zone: str, config_type: str
-) -> tuple:
-    return 0, "success", None
-
-
-def run_terraform_plan_command_mock(working_directory: str, account_id: str) -> tuple:
-    return 0, "success", None
-
-
-def run_terraform_apply_command_mock(working_directory: str, account_id: str) -> tuple:
-    return 0, "success", None
-
-
 def run_terraform_command_mock(command: str, working_directory: str) -> tuple:
     return 0, "success", None
-
-
-def run_terraform_command_error_mock(working_directory: str, account_id: str) -> tuple:
-    return 1, "Failed", None
 
 
 def run_terraform_command_init_error_mock(
@@ -192,6 +233,10 @@ def run_terraform_command_init_error_mock(
 ) -> tuple:
     return 1, "Failed", None
 
+def run_terraform_command_import_mock(
+    working_directory: str, name: str, token: str
+) -> tuple:
+    return 0, "terraform import x y/id1\nterraform import x y/id2", None
 
 def copy_tf_files_mock(codebase_path: str, working_directory: str) -> tuple:
     return None
@@ -202,12 +247,11 @@ def create_api_token_mock(
 ) -> str:
     return None
 
-
-def set_cloudflare_scoped_token_mock(input_model: InputModel):
-    return ['123']
-
 def delete_all_tokens_mock(initial_token: str, token_store: list) -> list:
-    return ['123']
+    return ["123"]
+
+def check_initial_token_mock(environment) -> str:
+    return "api_token"
 
 
 @pytest.fixture(autouse=True)

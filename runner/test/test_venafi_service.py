@@ -10,63 +10,54 @@ from runner.src.exceptions import VenafiServiceException
 def test_refresh_venafi_cert(monkeypatch):
     # CSR input is invalid
     with pytest.raises(VenafiServiceException):
-        venafi_service.refresh_venafi_cert({}, "env", "signer", "tso", 10, [])
+        venafi_service.refresh_venafi_cert({}, "env", "signer", "tso", [])
 
     # IDP private key is not set
-    with pytest.raises(VenafiServiceException):
+    monkeypatch.setattr(venafi_service.api_constant, "idp_private_key", "")
+    with pytest.raises(VenafiServiceException) as exc_info:
         venafi_service.refresh_venafi_cert(
             {"common_name": "test", "csr": "test", "id": "test"},
             "env",
             "signer",
             "tso",
-            10,
             [],
         )
+    assert "Venafi private key is not set" in str(exc_info.value)
 
-    # Error - env is prod but signer is not ext-ev
+    # Client ID is not set
     monkeypatch.setattr(venafi_service.api_constant, "idp_private_key", "key")
-    with pytest.raises(VenafiServiceException):
+    with pytest.raises(VenafiServiceException) as exc_info:
         venafi_service.refresh_venafi_cert(
             {"common_name": "test", "csr": "test", "id": "test"},
-            "prod",
-            "ext",
+            "env",
+            "signer",
             "tso",
-            10,
             [],
         )
+    assert "Venafi client ID is not set" in str(exc_info.value)
 
-    # Signer is not provided and env is prod
-    with pytest.raises(VenafiServiceException):
+    # Signer is not provided
+    monkeypatch.setattr(venafi_service.api_constant, "venafi_client_id", "client_id")
+    with pytest.raises(VenafiServiceException) as exc_info:
         venafi_service.refresh_venafi_cert(
             {"common_name": "test", "csr": "test", "id": "test"},
-            "prod",
+            "prd",
             None,
             "tso",
-            10,
             [],
         )
-
-    # Signer is not provided and env is not prod
-    with pytest.raises(VenafiServiceException):
-        venafi_service.refresh_venafi_cert(
-            {"common_name": "test", "csr": "test", "id": "test"},
-            "dev",
-            None,
-            "tso",
-            10,
-            [],
-        )
+    assert "Invalid signer provided" in str(exc_info.value)
 
     # Signer is invalid
-    with pytest.raises(VenafiServiceException):
+    with pytest.raises(VenafiServiceException) as exc_info:
         venafi_service.refresh_venafi_cert(
             {"common_name": "test", "csr": "test", "id": "test"},
             "prod",
             "invalid",
             "tso",
-            10,
             [],
         )
+    assert "Invalid signer provided" in str(exc_info.value)
 
     # Success
     # monkeypatch.setattr(venafi_service.api_constant, "idp_private_key", "key")
@@ -78,10 +69,9 @@ def test_refresh_venafi_cert(monkeypatch):
     assert (
         venafi_service.refresh_venafi_cert(
             {"common_name": "test", "csr": "test", "id": "test"},
-            "env",
+            "prd",
             "ext",
             "tso",
-            10,
             [],
         )
         == "test"
@@ -92,15 +82,15 @@ def test_refresh_venafi_cert(monkeypatch):
         "refresh",
         mock_exception,
     )
-    with pytest.raises(VenafiServiceException):
+    with pytest.raises(VenafiServiceException) as exc_info:
         venafi_service.refresh_venafi_cert(
             {"common_name": "test", "csr": "test", "id": "test"},
             "prod",
             "ext",
             "tso",
-            10,
             [],
         )
+    assert "Error issuing certificate from Venafi" in str(exc_info.value)
 
     # Invalid response - certificatedata is None and statuscode is 400
     # monkeypatch.setattr(venafi_service.api_constant, "idp_private_key", "key")
@@ -109,30 +99,41 @@ def test_refresh_venafi_cert(monkeypatch):
         "refresh",
         lambda *args: {"certificatedata": None, "statuscode": 400},
     )
-    with pytest.raises(VenafiServiceException):
+    with pytest.raises(VenafiServiceException) as exc_info:
         venafi_service.refresh_venafi_cert(
             {"common_name": "test", "csr": "test", "id": "test"},
             "prod",
             "ext",
             "tso",
-            10,
             [],
         )
+    assert "Error issuing certificate from Venafi" in str(exc_info.value)
 
 
 def test_retrieve_venafi_cert(monkeypatch):
     # CSR input is invalid
     with pytest.raises(VenafiServiceException):
-        venafi_service.retrieve_venafi_cert({}, "tso")
+        venafi_service.retrieve_venafi_cert({}, "tso", "dev")
 
     # IDP private key is not set
     with pytest.raises(VenafiServiceException):
         venafi_service.retrieve_venafi_cert(
-            {"common_name": "test", "csr": "test", "id": "test"}, "tso"
+            {"common_name": "test", "csr": "test", "id": "test"}, "tso", "dev"
         )
 
-    # Success
+    # Client ID is not set
     monkeypatch.setattr(venafi_service.api_constant, "idp_private_key", "key")
+    with pytest.raises(VenafiServiceException):
+        venafi_service.refresh_venafi_cert(
+            {"common_name": "test", "csr": "test", "id": "test"},
+            "env",
+            "signer",
+            "tso",
+            [],
+        )
+    
+    # Success
+    monkeypatch.setattr(venafi_service.api_constant, "venafi_client_id", "client_id")
     monkeypatch.setattr(
         cbacert,
         "retrieve",
@@ -141,7 +142,7 @@ def test_retrieve_venafi_cert(monkeypatch):
     assert (
         venafi_service.retrieve_venafi_cert(
             {"common_name": "test", "csr": "test", "id": "test"},
-            "tso",
+            "tso", "dev"
         )
         == "test"
     )
@@ -154,7 +155,7 @@ def test_retrieve_venafi_cert(monkeypatch):
     )
     assert (
         venafi_service.retrieve_venafi_cert(
-            {"common_name": "test", "csr": "test", "id": "test"}, "tso"
+            {"common_name": "test", "csr": "test", "id": "test"}, "tso", "dev"
         )
         is None
     )
@@ -167,7 +168,7 @@ def test_retrieve_venafi_cert(monkeypatch):
     )
     with pytest.raises(VenafiServiceException):
         venafi_service.retrieve_venafi_cert(
-            {"common_name": "test", "csr": "test", "id": "test"}, "tso"
+            {"common_name": "test", "csr": "test", "id": "test"}, "tso", "dev"
         )
 
 

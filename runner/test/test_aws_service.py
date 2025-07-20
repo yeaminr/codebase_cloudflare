@@ -1,18 +1,18 @@
 import pytest
-from runner.src import aws_service
-from runner.src import exceptions
+from runner.src import aws_service, exceptions, api_constant, helpers
+from runner.src.model import InputModel, EnvironmentModel
 
 
 # Tests
 def test_change_resource_record_sets(monkeypatch) -> None:
     # Success case - Added try except block to catch any exceptions during failure
     monkeypatch.setattr(
-        aws_service.dev_client,
+        aws_service.nonprod_client,
         "change_resource_record_sets",
         aws_change_resource_record_sets_mock,
     )
     assert aws_service.change_resource_record_sets(
-        env="dev",
+        env="nonprod",
         hosted_zone_id="123456789",
         record_name="example.cba.com.au",
         record_value="test",
@@ -35,12 +35,12 @@ def test_change_resource_record_sets(monkeypatch) -> None:
     )
     # Status code not 200
     monkeypatch.setattr(
-        aws_service.dev_client,
+        aws_service.nonprod_client,
         "change_resource_record_sets",
         aws_change_resource_record_sets_mock,
     )
     assert not aws_service.change_resource_record_sets(
-        env="dev",
+        env="nonprod",
         hosted_zone_id="status_code_not_200",
         record_name="example.cba.com.au",
         record_value="test",
@@ -49,13 +49,13 @@ def test_change_resource_record_sets(monkeypatch) -> None:
     )
     # Exception
     monkeypatch.setattr(
-        aws_service.dev_client,
+        aws_service.nonprod_client,
         "change_resource_record_sets",
         aws_change_resource_record_sets_mock,
     )
     with pytest.raises(exceptions.AWSServiceRoute53ChangeResourceRecordSetsException):
         aws_service.change_resource_record_sets(
-            env="dev",
+            env="nonprod",
             hosted_zone_id="exception",
             record_name="example.cba.com.au",
             record_value="test",
@@ -77,18 +77,21 @@ def test_get_hosted_zone_id_by_domain(monkeypatch) -> None:
     )
     # Incorrect domain name
     monkeypatch.setattr(
-        aws_service.dev_client,
+        aws_service.nonprod_client,
         "list_hosted_zones_by_name",
         aws_list_hosted_zones_by_name_mock,
     )
-    assert aws_service.get_hosted_zone_id_by_domain("example.cba.com.aa", "dev") == None
+    assert (
+        aws_service.get_hosted_zone_id_by_domain("example.cba.com.aa", "nonprod")
+        == None
+    )
     # Empty response
     monkeypatch.setattr(
-        aws_service.dev_client,
+        aws_service.nonprod_client,
         "list_hosted_zones_by_name",
         aws_list_hosted_zones_by_name_mock,
     )
-    assert aws_service.get_hosted_zone_id_by_domain("", "dev") == None
+    assert aws_service.get_hosted_zone_id_by_domain("", "nonprod") == None
 
 
 def test_check_record_exist(monkeypatch) -> None:
@@ -106,7 +109,7 @@ def test_check_record_exist(monkeypatch) -> None:
     )
     # Record not found
     monkeypatch.setattr(
-        aws_service.dev_client,
+        aws_service.nonprod_client,
         "list_resource_record_sets",
         aws_list_resource_record_sets_mock,
     )
@@ -115,12 +118,12 @@ def test_check_record_exist(monkeypatch) -> None:
             hosted_zone_id="not_found",
             record_name="example.cba.com.au",
             record_type="TXT",
-            env="dev",
+            env="nonprod",
         )
     )
     # Invalid/Empty response
     monkeypatch.setattr(
-        aws_service.dev_client,
+        aws_service.nonprod_client,
         "list_resource_record_sets",
         aws_list_resource_record_sets_mock,
     )
@@ -129,34 +132,61 @@ def test_check_record_exist(monkeypatch) -> None:
             hosted_zone_id="empty",
             record_name="example.cba.com.au",
             record_type="TXT",
-            env="dev",
+            env="nonprod",
         )
     )
 
 
 def test_process_txt_record(monkeypatch) -> None:
     # Success case
+    input_model = InputModel(
+        environment=EnvironmentModel.dev,
+        fqdn="valid.cba.com.au",
+        config_type="zone",
+        action="plan",
+    )
+    monkeypatch.setattr(api_constant, "cba_aws_dns_record_env", "prod")
     monkeypatch.setattr(
         aws_service, "update_txt_record_by_env", updated_txt_record_by_env_mock
     )
     try:
         aws_service.process_txt_record(
-            domain_name="valid",
+            input_model=input_model,
             record_name="record_name",
             record_value="record_value",
+            cwd="cwd",
         )
     except Exception as e:
         pytest.fail(f"test_process_txt_record failed: {e}")
 
     # Invalid domain name - hosted zone id not found
+    invalid_input_model = InputModel(
+        environment=EnvironmentModel.dev,
+        fqdn="invalid.xyz.com.au",
+        config_type="zone",
+        action="plan",
+    )
+    monkeypatch.setattr(api_constant, "cba_aws_dns_record_env", "nonprod")
     with pytest.raises(exceptions.AWSServiceRoute53RecordNotFoundException):
         aws_service.process_txt_record(
-            domain_name="invalid", record_name="record_name", record_value="record_value"
+            input_model=invalid_input_model,
+            record_name="record_name",
+            record_value="record_value",
+            cwd="cwd",
         )
     # Invalid domain name - raises exception
+    empty_input_model = InputModel(
+        environment=EnvironmentModel.dev,
+        fqdn="",
+        config_type="zone",
+        action="plan",
+    )
     with pytest.raises(exceptions.AWSServiceRoute53InvalidInputException):
         aws_service.process_txt_record(
-            domain_name="", record_name="record_name", record_value="record_value"
+            input_model=empty_input_model,
+            record_name="record_name",
+            record_value="record_value",
+            cwd="cwd",
         )
 
 
@@ -181,14 +211,14 @@ def test_update_txt_record_by_env(monkeypatch) -> None:
         domain_name="example.cba.com.au",
         record_name="valid",
         record_value="test",
-        env="dev",
+        env="nonprod",
     )
     # Invalid domain name - hosted zone id not found
     assert not aws_service.update_txt_record_by_env(
         domain_name="invalid",
         record_name="cloudflare-verify.example.cba.com.au",
         record_value="test",
-        env="dev",
+        env="nonprod",
     )
 
     called_count = {"count": 0}
@@ -214,9 +244,28 @@ def test_update_txt_record_by_env(monkeypatch) -> None:
         domain_name="example.cba.com.au",
         record_name="txt_already_exists",
         record_value="test",
-        env="dev",
+        env="nonprod",
     )
     assert called_count["count"] == 0
+
+    # NS record not found
+    monkeypatch.setattr(
+        aws_service,
+        "get_hosted_zone_id_by_domain",
+        lambda x, y: "/hostedzone/123456789",
+    )
+    monkeypatch.setattr(
+        aws_service,
+        "check_record_exist",
+        lambda x, y, z, w: False,
+    )
+    with pytest.raises(exceptions.AWSServiceRoute53RecordNotFoundException):
+        aws_service.update_txt_record_by_env(
+            domain_name="example.cba.com.au",
+            record_name="valid",
+            record_value="test",
+            env="nonprod",
+        )
 
 
 # Mock responses
@@ -282,10 +331,8 @@ def aws_list_resource_record_sets_mock(
     return response
 
 
-def updated_txt_record_by_env_mock(
-    domain_name, record_name, record_value, env
-):
-    if domain_name == "valid":
+def updated_txt_record_by_env_mock(domain_name, record_name, record_value, env):
+    if domain_name == "cba.com.au":
         return True
     return False
 
@@ -315,3 +362,29 @@ def change_resource_record_sets_mock(
     if record_name == "valid":
         return True
     return False
+
+
+def test_get_aws_hosted_zone_env(monkeypatch) -> None:
+    # Mock the get_parameters_yaml function to return a specific environment
+    monkeypatch.setattr(helpers, "get_parameters_yaml", lambda *args, **kwargs: {})
+    assert aws_service.get_aws_hosted_zone_env("prd", "cwd") == "prod"
+    assert aws_service.get_aws_hosted_zone_env("dev", "cwd") == "nonprod"
+    assert aws_service.get_aws_hosted_zone_env("tst", "cwd") == "nonprod"
+    assert aws_service.get_aws_hosted_zone_env("stg", "cwd") == "nonprod"
+
+    # stg and tst environments with dns_env set to prod
+    monkeypatch.setattr(
+        helpers,
+        "get_parameters_yaml",
+        lambda *args, **kwargs: {"dns_env": "prod"},
+    )
+    assert aws_service.get_aws_hosted_zone_env("stg", "cwd") == "prod"
+    assert aws_service.get_aws_hosted_zone_env("tst", "cwd") == "prod"
+
+    # Invalid environment
+    with pytest.raises(exceptions.AWSServiceRoute53InvalidInputException):
+        aws_service.get_aws_hosted_zone_env("invalid_env", None)
+
+    # Missing cwd for tst and stg environments
+    with pytest.raises(exceptions.AWSServiceRoute53InvalidInputException):
+        aws_service.get_aws_hosted_zone_env("tst", None)
