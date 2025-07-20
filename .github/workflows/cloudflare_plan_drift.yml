@@ -1,0 +1,93 @@
+name: 'Cloudflare Plan Drift'
+on:
+  workflow_call
+
+permissions:
+  id-token: write         # This is required for requesting the JWT
+  contents: read          # This is required for checking out the code
+
+jobs:
+  setup-and-run-plan:
+    name: plan-drift - ${{ matrix.environment }} - ${{ matrix.config_type }}
+    runs-on: [default]
+    strategy:
+      matrix:
+        environment: [tst, stg, prd]
+        config_type: [security]
+    steps:
+      - name: Check out tenant repository
+        uses: actions/checkout@v4
+
+      - name: Run Plan to Check Drift
+        id: run-plan
+        run: |
+          environment=${{ matrix.environment }}
+          config_type=${{ matrix.config_type }}
+          echo "environment: "$environment
+          echo "config_type: "$config_type
+
+          if [[ $environment == "dev" ]]; then
+            ESM_RUNNER_ENDPOINT="https://d-s-es1-app-alb.chpcyberp1dev01.aws.test.au.internal.cba"
+          elif [[ $environment == "tst" ]]; then
+            ESM_RUNNER_ENDPOINT="https://t2-s-es1-app-alb.chpcyberp1t201.aws.test.au.internal.cba"
+          elif [[ $environment == "stg" ]]; then
+            ESM_RUNNER_ENDPOINT="https://s-s-es1-app-alb.chpcyberp1stg01.aws.test.au.internal.cba"
+          elif [[ $environment == "prd" ]]; then
+            ESM_RUNNER_ENDPOINT="https://p-s-es1-app-alb.chpcyberp1prd01.aws.prod.au.internal.cba"
+          else
+            echo "Invalid environment"
+            exit 1
+          fi
+
+          no_drift=1 #true
+          for zone_name in `ls ${environment}/`
+          do
+            echo "zone name: $zone_name"
+            if [[ "$zone_name" != "README.md" ]] && [[ "$zone_name" != "${environment}.poc.com.au" ]]; then
+              if [[ ! -f "${environment}/${zone_name}/${config_type}/${config_type}_parameters.yml" ]]; then
+                echo "Config file ${config_type}_parameters.yml does not exist."
+                continue
+              else
+                echo "Config file ${config_type}_parameters exists."
+              fi
+
+              # Running the plan on config
+              echo "============================================================="
+              echo "Running plan on ConfigType: $config_type for Zone: $zone_name"
+              echo "============================================================="
+              
+              # Generate ID token
+              echo "Generatin ID token..."
+              id_token=$(curl -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://DHPRunnerAPI" | jq -r '.value')
+              
+              # Invoke DHP Api for Plan
+              echo "calling plan endpoint..."
+              plan_response_status_code=$(curl -X GET "$ESM_RUNNER_ENDPOINT/runner/${config_type}/${environment}?fqdn=${zone_name}" -H 'accept: application/json' -H 'Content-Type: application/json' -H "X-Github-Auth-Header: Bearer $id_token" -s -o output.json -w "%{http_code}")
+
+              # Print the output
+              json_response_detail=`cat output.json | jq -r '.detail'`
+              echo "$json_response_detail"
+
+              # Check if the plan was successful
+              if [[ "${plan_response_status_code}" != "200" ]]; then
+                no_drift=2 #couldn't check
+                echo "Error in executing plan"
+              else
+                echo "Plan executed successfully"
+                echo ""
+                if [[ $json_response_detail != *"No changes."* ]]; then
+                  no_drift=0 #false
+                  echo "********** Terraform returned changes. Drifts found on "$config_type" config for "${zone_name}" *************"
+                else
+                  echo "********** Terraform returned No changes. No drifts found on "$config_type" Config for "${zone_name}" *************"
+                fi
+                echo ""
+                echo "^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^"
+              fi
+              echo "============================================================="
+              echo "============================================================="
+            fi
+          done
+          if [[ $no_drift -ne 1 ]]; then
+            exit 1 # This is to trigger email
+          fi

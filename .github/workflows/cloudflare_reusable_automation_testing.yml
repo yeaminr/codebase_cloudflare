@@ -1,98 +1,205 @@
 name: 'Cloudflare Reusable Automation Testing'
 on:
   # This will allow the self-service repositories to trigger the automation tests using their input yaml files
-  # Uncomment this section once data provider has been finalised
-  # workflow_call:
-  #   inputs:
-  #     tenant_definition_file:
-  #       description: 'Path to tenant definition file'
-  #       required: true
-  #       type: string
-  #     tenant_selfservice_setup_file:
-  #       description: 'Path to tenant selfservice setup file'
-  #       required: true
-  #       type: string
-  workflow_dispatch:
+  workflow_call:
     inputs:
-      app-url:
-        description: 'Application url for testing DNS config'
+      runner-env:
+        description: 'Environment for ES Self-Service API'
         required: true
         type: string
-      tags:
+      test-tag:
         description: 'Test scenario tags (pytest markers)'
         required: true
         type: string
+      custom-tag-filter:
+        description: 'Custom tag filter expression example: cfconfig and security_config and cert_config'
+        required: false
+        type: string
       log-level:
         description: 'Log level output for test execution'
-        required: true
         default: 'warning'
-        type: choice
-        options:
-          - info
-          - warning
+        required: false
+        type: string
       tenant-dns:
         description: 'Tenant DNS name'
         required: true
         type: string
-      security-config-filepath:
-        description: 'Path to security config YAML'
-        required: true
-        type: string
-      certificate-config-filepath:
-        description: 'Path to certificate config YAML'
-        required: true
-        type: string
+      multi-zone:
+        description: 'Multi-zone test execution'
+        default: false
+        required: false
+        type: boolean
 
 permissions:
   id-token: write
   contents: read
 
 jobs:
-  test:
+  setup:
     runs-on: [default]
     environment:
         name: 'cloudflare_development'
-    defaults:
-      run:
-        working-directory: ./testing/pytest_framework
-
+    outputs:
+      ES_RUNNER_HOST: ${{ steps.runner-endpoint.outputs.ES_RUNNER_HOST }}
+      PYTEST_TAGS: ${{ steps.test-filter.outputs.PYTEST_TAGS }}
+      EXECUTION_DATE: ${{ steps.date-output.outputs.EXECUTION_DATE }}
+      ZONES: ${{ steps.zone-filter.outputs.ZONES }}
     steps:
-      - name: Check out repository code
+      - name: Define Edge Security Runner Endpoint
+        id: runner-endpoint
+        run: |
+          environment=${{ inputs.runner-env }}
+          echo "environment: $environment"
+
+          if [[ $environment == "dev" ]]; then
+            RUNNER_ENDPOINT="https://d-s-es1-app-alb.chpcyberp1dev01.aws.test.au.internal.cba"
+          elif [[ $environment == "tst" ]]; then
+            RUNNER_ENDPOINT="https://t2-s-es1-app-alb.chpcyberp1t201.aws.test.au.internal.cba"
+          elif [[ $environment == "stg" ]]; then
+            RUNNER_ENDPOINT="https://s-s-es1-app-alb.chpcyberp1stg01.aws.test.au.internal.cba"
+          elif [[ $environment == "prd" ]]; then
+            RUNNER_ENDPOINT="https://p-s-es1-app-alb.chpcyberp1prd01.aws.prod.au.internal.cba"
+          else
+            echo "Invalid environment"
+            exit 1
+          fi
+          echo "ES_RUNNER_HOST for $environment: $RUNNER_ENDPOINT"
+
+          echo "ES_RUNNER_HOST=$RUNNER_ENDPOINT" >> $GITHUB_OUTPUT
+
+      - name: Filter Tests to Execute
+        id: test-filter
+        run: |
+          input_tag=${{ inputs.test-tag }}
+          echo "Test Tag to Execute: $input_tag"
+
+          if [[ $input_tag == "all" ]]; then
+            TAGS="cfconfig"
+          elif [[ $input_tag == "zone" ]]; then
+            TAGS="cfconfig and zone_config"
+          elif [[ $input_tag == "cdn" ]]; then
+            TAGS="cfconfig and cdn_config"
+          elif [[ $input_tag == "security" ]]; then
+            TAGS="cfconfig and security_config"
+          elif [[ $input_tag == "tls" ]]; then
+            TAGS="cfconfig and tls_config"
+          elif [[ $input_tag == "cert" ]]; then
+            TAGS="cfconfig and cert_config"
+          elif [[ $input_tag == "mtls" ]]; then
+            TAGS="cfconfig and mtls_config"
+          elif [[ $input_tag == "dns" ]]; then
+            TAGS="cfconfig and dns_config"
+          elif [[ $input_tag == "custom" ]]; then
+            TAGS="${{ inputs.custom-tag-filter }}"
+          else
+            echo "Invalid Test Tag"
+            exit 1
+          fi
+
+          echo "PYTEST_TAGS=$TAGS" >> $GITHUB_OUTPUT
+
+      # This step is required to read zone information from the tenant repository
+      - name: Check out tenant config repository code
         uses: actions/checkout@v4
 
-      - name: Retrieve Akamai and Artifactory credentials
-        uses: hashicorp/vault-action@v3.0.0
-        with:
-          method: jwt
-          path: jwt_github-repository
-          url: ${{ vars.VAULT_URL }}
-          role: default
-          secrets: |
-            ${{ vars.VAULT_NAMESPACE }}/${{ vars.VAULT_TESTING_PATH }} cloudflare_token | CLOUDFLARE_TOKEN;
-            ${{ vars.VAULT_NAMESPACE }}/${{ vars.VAULT_TESTING_PATH }} proxy_url | PROXY_URL;
-            ${{ vars.VAULT_NAMESPACE }}/${{ vars.VAULT_TESTING_PATH }} proxy_port | PROXY_PORT;
-
-      # - name: Read and extract information from tenant config file
-      #   run: |
-      #     echo "Read and extract information from tenant config file"
-
-      # - name: Identify targeted environments
-      #   run: |
-      #     echo "Identify targeted environments and extract them from tenant definition file"
-
-      - name: Install test dependencies
+      - name: Filter Zones to Test
+        working-directory: ${{ inputs.runner-env }}
+        id: zone-filter
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          multi_zone=${{ inputs.multi-zone }}
+          echo "Multi-zone Test Execution: $multi_zone"
+
+          if [[ $multi_zone == "true" ]]; then
+            # Filter zone names from environment directories
+            ZONE_DIRS=($(ls | grep -E '^[A-Za-z0-9-]{1,63}\.([A-Za-z0-9-]{1,63}\.)+[A-Za-z]{2,}'))
+            ZONES=$(printf '%s\n' "${ZONE_DIRS[@]}" | jq -R -c . | jq -s -c .)
+          else
+            ZONES='["${{ inputs.tenant-dns }}"]'
+          fi
+
+          echo "Zones to test: ${ZONES}"
+          echo "ZONES=$ZONES" >> $GITHUB_OUTPUT
+
+      - name: Set Test Execution Date
+        id: date-output
+        run: echo "EXECUTION_DATE=$(date +'%Y-%m-%dT%H:%M:%S')" >> $GITHUB_OUTPUT
+  
+  test:
+    runs-on: [default]
+    needs: setup
+    strategy:
+      matrix:
+        zone: ${{fromJson(needs.setup.outputs.ZONES)}}
+    steps:
 
       - name: Execute tests
-        run: |
-          pytest -v --log-cli-level=${{ inputs.log-level }} -m "${{ inputs.tags }}"
-        env:
-          CLOUDFLARE_TOKEN: ${{ env.CLOUDFLARE_TOKEN }}
-          PROXY_URL: ${{ env.PROXY_URL }}
-          PROXY_PORT: ${{ env.PROXY_PORT }}
-          APP_API_URL: ${{ inputs.app-url }}
-          CF_TENANT_DOMAIN: ${{ inputs.tenant-dns }} # TODO update this to retrieve from tenant config YAML
-          CF_SECURITY_CONFIG_FILE: ${{ inputs.security-config-filepath }}
-          CF_CERTIFICATE_CONFIG_FILE: ${{ inputs.certificate-config-filepath }}
+        id: test-execution
+        run: |          
+          ES_AUTH_TOKEN=$(curl -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://DHPRunnerAPI" | jq -r '.value')
+
+          test_response_status_code=$(curl -X POST \
+            "${{ needs.setup.outputs.ES_RUNNER_HOST }}/runner/test/${{ inputs.runner-env }}" \
+            -H "Accept: application/json" \
+            -H "X-Github-Auth-Header: Bearer $ES_AUTH_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n --arg fqdn "${{ matrix.zone }}" \
+                --arg test_tags "${{ needs.setup.outputs.PYTEST_TAGS }}" \
+                --arg log_level "${{ inputs.log-level }}" \
+                --arg tenant_repo "${{ github.repository }}" \
+                --arg github_run_id "${{ github.run_id }}" \
+                '{
+                fqdn: $fqdn,
+                test_tags: $test_tags,
+                log_level: $log_level,
+                report_inputs: {
+                  tenant_repo: $tenant_repo,
+                  github_run_id: $github_run_id
+                }
+                }')" \
+              -s -o output.json -w "%{http_code}")
+
+          if [[ "$test_response_status_code" -ne 200 ]]; then
+            echo "Test execution request failed with status code $test_response_status_code"
+            echo "Response body:"
+            cat output.json | jq
+            exit 1
+          fi
+
+          # Print the output
+          cat output.json | jq -r '.stdout'
+
+          # Extract the test_artefacts property and decode it as a zip file
+          test_artefacts=$(jq -r '.test_artefacts' output.json)
+
+          if [[ -z "$test_artefacts" || "$test_artefacts" == "null" || "$test_artefacts" == "" ]]; then
+            echo "No test artefacts found. Skipping artefact extraction."
+            echo "TEST_ARTEFACT_AVAILABLE=false" >> $GITHUB_OUTPUT
+          else
+            echo "TEST_ARTEFACT_AVAILABLE=true" >> $GITHUB_OUTPUT
+            echo "$test_artefacts" | base64 -d > test-artefacts.zip
+
+            # Create a directory for test artefacts
+            mkdir -p test_artefacts
+
+            # Unzip the artefacts into the test_artefacts directory
+            unzip -o test-artefacts.zip -d test_artefacts
+
+            echo "Test artefacts have been extracted to the test_artefacts directory."
+          fi
+
+          exit_code=$(jq -r '.exit_code' output.json)
+
+          # Check if test execution was successful
+          if [[ $exit_code -eq 0 ]]; then
+            echo "Test execution completed successfully"
+          else
+            echo "Test execution failed with exit_code $exit_code"
+            exit 1
+          fi
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always() && steps.test-execution.outputs.TEST_ARTEFACT_AVAILABLE == 'true'
+        with:
+          name: test-results_${{ matrix.zone }}
+          path: test_artefacts/

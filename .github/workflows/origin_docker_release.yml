@@ -1,0 +1,118 @@
+# This workflow will build the Docker image and check that the necessary packages are installed
+# This workflow will run on every push to feature or fix branches to provide developers with clarity on the state of the Docker image
+# CI:
+  # 1. Fetch Artifactory creds from Vault
+  # 2. Login to Artifactory
+  # 3. Build the Docker image
+  # 4. Run the Docker container and check that the necessary packages are installed
+# CD:
+  # 1. Run CI
+  # 2. Login to Edge Security Artifactory
+  # 3. Push the Docker image to Edge Security Artifactory
+
+  name: Origin Docker Release Workflow
+
+  on:
+    push:
+      branches:
+        - feature/**
+        - 'ESDE-**'
+        - '*fix/**'
+        - main
+      paths:
+        - 'origin_docker/**'
+        - '.github/workflows/origin_docker_release.yml'
+
+  permissions:
+    id-token: write         # This is required for requesting the JWT
+    contents: read          # This is required for actions/checkout
+    actions: read           # This is for snyk to be able to read the actions
+    statuses: read          # This is required for the security tab
+    security-events: write  # This is required to post to the security tab
+    pull-requests: read     # This is required to get the PR number
+
+  env:
+    IMAGE_PREFIX: origin-container
+
+  jobs:
+    build-docker-and-test:
+      runs-on: default
+      environment:
+        name: 'cloudflare_development'
+      outputs:
+        SNYK_SCA_BUNDLE: ${{ steps.snyk-sca-bundler.outputs.SNYK_SCA_BUNDLE }}
+
+      steps:
+        - name: Checkout code
+          uses: actions/checkout@v4
+        
+        - name: Fetch Creds from Vault
+          uses: hashicorp/vault-action@v3
+          with:
+              method: jwt
+              path: jwt_github-repository
+              url: ${{ vars.VAULT_URL }}
+              role: default
+              secrets: |
+                ${{ vars.VAULT_NAMESPACE }}/${{ vars.VAULT_ARTIFACTORY_PATH }}  cloudflare_artifactory_service_username | DOCKER_USERNAME;
+                ${{ vars.VAULT_NAMESPACE }}/${{ vars.VAULT_ARTIFACTORY_PATH }}  cloudflare_artifactory_service_password | DOCKER_PASSWORD;
+
+        - name: Login to Application Infrastructure Public Artifactory
+          uses: docker/login-action@v3
+          with:
+              registry: applicationinfrastructure-public.docker.internal.cba
+              username: ${{ env.DOCKER_USERNAME }}
+              password: ${{ env.DOCKER_PASSWORD }}
+
+        - name: Build Docker image
+          run: |
+            curr_datetime=$(TZ=Australia/Sydney date '+%Y%m%d.%H%M%S')
+            image_name="${{ env.IMAGE_PREFIX }}:v$curr_datetime"
+            PULL_REQUEST_NUMBER=$(gh pr list --search "$(git rev-parse HEAD)" --state merged  --json number --jq '.[0].number')
+            if [[ -n "${PULL_REQUEST_NUMBER}" ]]; then
+              image_name="${image_name}.pr$PULL_REQUEST_NUMBER"
+              echo "Docker image tag with PR number: $image_name"
+            fi
+            docker build --secret id=artifactory-service-password,env=DOCKER_PASSWORD \
+              --build-arg ARTIFACTORY_SERVICE_USERNAME=${{ env.DOCKER_USERNAME }} \
+              --build-arg RUNNER_IMAGE_TAG=$image_name \
+              --tag $image_name -f origin_docker/Dockerfile .
+            echo "IMAGE_NAME=$image_name" >> $GITHUB_ENV
+          env:
+            DOCKER_PASSWORD: ${{ env.DOCKER_PASSWORD }}
+            GH_TOKEN: ${{ github.token }}
+        
+        - name: Run Snyk SCA bundler
+          id: snyk-sca-bundler
+          uses: CBA-General/gha-base-templates/.github/actions/snyk-sca-bundler@snyk-sca-bundler/latest
+          
+          
+        - name: Login to Edge Security Artifactory
+          if: github.ref == 'refs/heads/main'
+          uses: docker/login-action@v3
+          with:
+              registry: digitalprotectiongroup-edgesecurity.docker.internal.cba
+              username: ${{ env.DOCKER_USERNAME }}
+              password: ${{ env.DOCKER_PASSWORD }}
+
+        - name: Push Docker image to Edge Security Artifactory
+          if: github.ref == 'refs/heads/main'
+          run: |
+            image_name=${{ env.IMAGE_NAME }}
+            echo "Docker image tag : $image_name"
+            docker tag $image_name digitalprotectiongroup-edgesecurity.docker.internal.cba/$image_name
+            docker push digitalprotectiongroup-edgesecurity.docker.internal.cba/$image_name
+
+         
+    cba-snyk-scan:
+      needs: build-docker-and-test # optional for SAST, required for SCA using composite action - Name of the step that builds your application
+      uses: CBA-General/gha-base-templates/.github/workflows/reusable-snyk-scan.yaml@wfs/latest
+      with:
+        build-break: false
+        build-break-threshold: medium # optional
+        debug-mode: false # optional
+        sast-opt-out: false
+        sca-opt-out: true
+        exclusions: "akamai,pov," # optional. comma-separated dir to exclude for scan e.g. exclusions=app,web,asset
+        inclusions: "docker/requirements/,runner/src/" # optional. comma-separated folder path to scan ending with / e.g. inclusions=src/webapp/,src/database/
+        snyk-sca-bundle-name: ${{ needs.build-docker-and-test.outputs.SNYK_SCA_BUNDLE }}

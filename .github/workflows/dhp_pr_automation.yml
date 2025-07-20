@@ -1,0 +1,170 @@
+name: "DHP PR Automation Workflow"
+on:
+  workflow_dispatch:
+    inputs:
+      docker_image_tag:
+        description: "Docker image tag to update the environment definition"
+        required: true
+        type: string
+      environment:
+        description: "Environment to update (dev, tst, stg)"
+        required: true
+        default: "dev"
+        type: choice
+        options:
+          - dev
+          - tst
+          - stg
+          - prd
+  workflow_call:
+    inputs:
+      docker_image_tag:
+        description: "Docker image tag to update the environment definition"
+        required: true
+        type: string
+      environment:
+        description: "Environment to update (dev, tst, stg)"
+        required: true
+        type: string
+        default: "dev"
+
+permissions:
+  id-token: write # This is required for requesting the JWT
+  contents: read # This is required for actions/checkout
+
+jobs:
+  create-dhp-pr:
+    runs-on: default
+    environment:
+      name: 'cloudflare_development'
+    env:
+      REPO_OWNER: "CBA-General"
+      CODEBASE_REPO: "groupsec-edgesecurity-codebase"
+      DHP_REPO: "DHP-CyberSecurity-EnvironmentDefinition"
+      DOCKER_IMAGE_TAG: ${{ github.event.inputs.docker_image_tag }}
+      DHP_ENVIRONMENT: ${{ github.event.inputs.environment }}
+      COMMIT_MESSAGE: "Docker image update - ${{ github.event.inputs.environment }} - ${{ github.event.inputs.docker_image_tag }}"
+    steps:
+      - name: Fetch GH App Creds from Vault
+        uses: hashicorp/vault-action@v3
+        with:
+          method: jwt
+          path: jwt_github-repository
+          url: ${{ vars.VAULT_URL }}
+          role: default
+          secrets: |
+            ${{ vars.VAULT_NAMESPACE }}/${{ vars.VAULT_GHEC_PATH }}  gh_automation_app_id | GH_APP_ID;
+            ${{ vars.VAULT_NAMESPACE }}/${{ vars.VAULT_GHEC_PATH }}  gh_automation_app_key | GH_APP_KEY;
+      - name: Create GH App Token
+        uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: ${{ env.GH_APP_ID }}
+          private-key: ${{ env.GH_APP_KEY }}
+          repositories: |
+            ${{ env.DHP_REPO }}
+            ${{ env.CODEBASE_REPO }}
+      - name: DHP Repo Checkout & Update
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          # Set definition file path based on environment
+          echo "----- Setting definition file path based on environment -----"
+          if [[ ${{ env.DHP_ENVIRONMENT }} == "dev" ]]; then
+            DEFINITION_FILE_PATH="definitions/Platforms/DHP-CyberSecurity/CyberSecurityPlatform1/dev/d-es1-swimlane/apps/jobTemplateDefinitions/ES.Runner.ContainersOnEcsFargate.yml"
+          elif [[ ${{ env.DHP_ENVIRONMENT }} == "tst" ]]; then
+            DEFINITION_FILE_PATH="definitions/Platforms/DHP-CyberSecurity/CyberSecurityPlatform1/test2/t2-es1-swimlane/apps/jobTemplateDefinitions/ES.Runner.ContainersOnEcsFargate.yml"
+          elif [[ ${{ env.DHP_ENVIRONMENT }} == "stg" ]]; then
+            DEFINITION_FILE_PATH="definitions/Platforms/DHP-CyberSecurity/CyberSecurityPlatform1/stg/s-es1-swimlane/apps/jobTemplateDefinitions/ES.Runner.ContainersOnEcsFargate.yml"
+          elif [[ ${{ env.DHP_ENVIRONMENT }} == "prd" ]]; then
+            DEFINITION_FILE_PATH="definitions/Platforms/DHP-CyberSecurity/CyberSecurityPlatform1/prod/p-es1-swimlane/apps/jobTemplateDefinitions/ES.Runner.ContainersOnEcsFargate.yml"
+          else
+            echo "Invalid environment"
+            exit 1
+          fi
+          echo "Definition file path: $DEFINITION_FILE_PATH"
+
+          # Clone the DHP repository
+          echo "----- Clone the DHP repository -----"
+          git clone https://x-access-token:${GH_TOKEN}@github.com/${{ env.REPO_OWNER }}/${{ env.DHP_REPO }}.git
+          cd ${{ env.DHP_REPO }}
+          git config user.name "edgesecurityautomationapp[bot]"
+          git config user.email "edgesecurityautomationapp[bot]@users.noreply.github.com"
+          echo "Repository cloned and configured"
+
+          # PR Number Extraction and Comparison
+          echo "----- Extracting and comparing PR numbers from Docker image tag -----"
+          old_pr_number=$(grep -oP 'Image\:.*pr[0-9]+$' $DEFINITION_FILE_PATH | grep -oP 'pr[0-9]+$' | sed 's/pr//')
+          new_pr_number=$(echo $DOCKER_IMAGE_TAG | grep -oP 'pr[0-9]+$' | sed 's/pr//')
+          echo "Old PR Number: $old_pr_number"
+          echo "New PR Number: $new_pr_number"
+          if [[ -z "$old_pr_number" || -z "$new_pr_number" ]]; then
+            echo "Error: Could not extract PR numbers from the Docker image tag."
+            exit 1
+          fi
+          if [[ "$old_pr_number" == "$new_pr_number" ]]; then
+            echo "No changes detected in the Docker image tag."
+            exit 0
+          fi
+          old_pr_merged_at=$(gh pr view $old_pr_number --repo ${{ env.REPO_OWNER }}/${{ env.CODEBASE_REPO }} --json mergedAt --jq '.mergedAt')
+          new_pr_merged_at=$(gh pr view $new_pr_number --repo ${{ env.REPO_OWNER }}/${{ env.CODEBASE_REPO }} --json mergedAt --jq '.mergedAt')
+          echo "$old_pr_number merged at: $old_pr_merged_at"
+          echo "$new_pr_number merged at: $new_pr_merged_at"
+          if [[ -z "$old_pr_merged_at" || -z "$new_pr_merged_at" ]]; then
+            echo "Error: Could not retrieve merged dates for PRs."
+            exit 1
+          fi
+
+          # Generate PR body
+          echo "----- Generating PR body -----"
+          PR_BODY=$(gh search prs --repo ${{ env.REPO_OWNER }}/${{ env.CODEBASE_REPO }} --merged --merged-at $old_pr_merged_at..$new_pr_merged_at --json title,url,state,author,closedAt --jq '.[] | "- \(.title):  \(.url)"')
+          echo "PR Body: \n$PR_BODY"
+          
+          # Check if branch exists and create it if not
+          echo "----- Check if branch exists and create it if not -----"
+          BRANCH_NAME="feature/automation-runner-image-update-$DHP_ENVIRONMENT"
+          if [ -n "$(git ls-remote --heads origin $BRANCH_NAME)" ]; then
+            echo "Branch $BRANCH_NAME already exists."
+            git fetch origin $BRANCH_NAME:$BRANCH_NAME
+            git checkout $BRANCH_NAME
+            git reset --hard origin/$BRANCH_NAME
+          else
+            echo "Branch $BRANCH_NAME does not exist. Creating it."
+            git checkout -b $BRANCH_NAME
+          fi
+          echo "Replacing Docker image tag in $DEFINITION_FILE_PATH"
+          sed -i "s|Image: .*|Image: digitalprotectiongroup-edgesecurity.docker.internal.cba/${{ env.DOCKER_IMAGE_TAG }}|" $DEFINITION_FILE_PATH
+          
+          # Check for changes and commit if necessary
+          echo "----- Checking for changes in $DEFINITION_FILE_PATH before committing -----"
+          if git diff --quiet; then
+            echo "No changes detected in $DEFINITION_FILE_PATH"
+          else
+            echo "Changes detected in $DEFINITION_FILE_PATH"
+            git add $DEFINITION_FILE_PATH
+            git commit -m "${{ env.COMMIT_MESSAGE }}"
+            git push --set-upstream origin $BRANCH_NAME
+          fi
+          
+          # Check if pull request already exists and create it if not
+          echo "----- Checking if pull request already exists for branch $BRANCH_NAME and creating it if not -----"
+          PR_EXISTS=$(gh pr list \
+            --state open \
+            --base main \
+            --head $BRANCH_NAME \
+            --json number \
+            --repo ${{ env.REPO_OWNER }}/${{ env.DHP_REPO }} \
+            --jq '.[].number')
+          if [[ -z "$PR_EXISTS" ]]; then
+            echo "Creating pull request..."
+            echo "$PR_BODY" | gh pr create \
+            --head $BRANCH_NAME \
+            --repo ${{ env.REPO_OWNER }}/${{ env.DHP_REPO }} \
+            --title "${{ env.COMMIT_MESSAGE }}" \
+            --body-file -
+          else
+            echo "Pull request already exists: $PR_EXISTS. Updating title and body"
+            echo "$PR_BODY" | gh pr edit $PR_EXISTS \
+              --title "${{ env.COMMIT_MESSAGE }}" \
+              --body-file -
+          fi

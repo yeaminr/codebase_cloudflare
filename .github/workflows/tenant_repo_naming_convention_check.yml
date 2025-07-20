@@ -1,0 +1,73 @@
+name: Naming Convention Check
+
+on:
+  workflow_call:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  branch_pattern: "^(CHG[0-9]{6,8}|[A-Z]{2,7}-[0-9]{1,5})-(tst|stg|prd)-(zone|app_list|cdn|security|tls|cert|mtls|all)-.+$"
+  pr_pattern: "^\\[(CHG[0-9]{6,8}|[A-Z]{2,7}-[0-9]{1,5})\\] - (tst|stg|prd) - .+$"
+
+jobs:
+  naming-convention-check:
+    runs-on: default
+    steps:
+      - name: Check branch & PR title naming convention
+        run: |
+          echo "Checking branch & PR title naming convention"
+          branch="${{ github.head_ref }}"
+          pr_title="${{ github.event.pull_request.title }}"
+          is_valid_branch=true
+          is_valid_pr_title=true
+          if [[ ! $branch =~ $branch_pattern ]]; then
+            echo "Branch '$branch' naming conventions are incorrect."
+            echo "Branch name should be of the pattern $branch_pattern"
+            echo "Example: JIRA-1234-tst-zone-somestring, CHG123456-stg-cdn-somestring"
+            is_valid_branch=false
+            echo "is_valid_branch=false" >> $GITHUB_ENV
+          fi
+          if [[ ! $pr_title =~ $pr_pattern ]]; then
+            echo "PR title '$pr_title' naming conventions are incorrect."
+            echo "PR title should be of the pattern $pr_pattern"
+            echo "Example: [JIRA-1234] - tst - Update Test Cache rules, [CHG123456] - stg - Add IP whitelist"
+            is_valid_pr_title=false
+            echo "is_valid_pr_title=false" >> $GITHUB_ENV
+          fi
+          if [[ $is_valid_branch == false || $is_valid_pr_title == false ]]; then
+            exit 1
+          fi
+          echo "Branch '$branch' and PR title '$pr_title' naming conventions are Correct."
+      - name: Add PR comment
+        if: always()
+        run: |
+          echo "Adding PR comment"
+          branch="${{ github.head_ref }}"
+          pr_title="${{ github.event.pull_request.title }}"
+          pr_number="${{ github.event.pull_request.number }}"
+          if [[ $is_valid_branch == false ]]; then
+            branch_comment="Branch **$branch** - :x:"
+          else
+            branch_comment="Branch **$branch** - :white_check_mark:"
+          fi
+          if [[ $is_valid_pr_title == false ]]; then
+            pr_comment="PR title **$pr_title** - :x:"
+          else
+            pr_comment="PR title **$pr_title** - :white_check_mark:"
+          fi
+          comment="### Naming Convention Check\n\n"
+          comment+="$branch_comment\n"
+          comment+="$pr_comment\n"
+          if [[ $is_valid_branch == false || $is_valid_pr_title == false ]]; then
+            comment+="Please follow the naming conventions and update the branch and/or PR title."
+          else
+            comment+="No action required."
+          fi
+          echo "Comment: $comment"
+          curl -X POST -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -d "{\"body\": \"$comment\"}" \
+            "https://api.github.com/repos/${{ github.repository }}/issues/$pr_number/comments"
+          
+

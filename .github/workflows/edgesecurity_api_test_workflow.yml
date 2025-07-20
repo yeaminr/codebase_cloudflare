@@ -1,0 +1,150 @@
+name: 'Edge Security API Automation Testing Workflow'
+on:
+  workflow_call:
+    inputs:
+      runner-env:
+        description: 'Environment for ES Self-Service API'
+        required: true
+        type: string
+      log-level:
+        description: 'Log level output for test execution'
+        default: 'warning'
+        required: false
+        type: string
+      tenant-dns:
+        description: 'Tenant DNS name'
+        required: true
+        type: string
+      zephyr-upload:
+        description: 'Upload test results to Zephyr'
+        default: false
+        required: false
+        type: boolean
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  setup:
+    runs-on: [default]
+    outputs:
+      ES_RUNNER_HOST: ${{ steps.runner-endpoint.outputs.ES_RUNNER_HOST }}
+      EXECUTION_DATE: ${{ steps.date-output.outputs.EXECUTION_DATE }}
+    steps:
+      - name: Define Edge Security Runner Endpoint
+        id: runner-endpoint
+        run: |
+          environment=${{ inputs.runner-env }}
+          echo "environment: $environment"
+
+          if [[ $environment == "dev" ]]; then
+            RUNNER_ENDPOINT="d-s-es1-app-alb.chpcyberp1dev01.aws.test.au.internal.cba"
+          elif [[ $environment == "tst" ]]; then
+            RUNNER_ENDPOINT="t2-s-es1-app-alb.chpcyberp1t201.aws.test.au.internal.cba"
+          elif [[ $environment == "stg" ]]; then
+            RUNNER_ENDPOINT="s-s-es1-app-alb.chpcyberp1stg01.aws.test.au.internal.cba"
+          elif [[ $environment == "prd" ]]; then
+            RUNNER_ENDPOINT="p-s-es1-app-alb.chpcyberp1prd01.aws.prod.au.internal.cba"
+          else
+            echo "Invalid environment"
+            exit 1
+          fi
+          echo "ES_RUNNER_HOST for $environment: $RUNNER_ENDPOINT"
+
+          echo "ES_RUNNER_HOST=$RUNNER_ENDPOINT" >> $GITHUB_OUTPUT
+
+      - name: Set Test Execution Date
+        id: date-output
+        run: echo "EXECUTION_DATE=$(date +'%Y-%m-%dT%H:%M:%S')" >> $GITHUB_OUTPUT
+
+  test:
+    runs-on: [default]
+    needs: setup
+    environment:
+        name: 'cloudflare_development'
+    defaults:
+      run:
+        working-directory: ./testing/pytest_framework
+
+    steps:
+      - name: Retrieve GitHub Repo credentials
+        uses: hashicorp/vault-action@v3.0.0
+        with:
+          method: jwt
+          path: jwt_github-repository
+          url: https://secrets.vault.cba
+          role: default
+          secrets: |
+            cybersecurity/edgesecurity-vault-dev/kv/data/shared/ghec gh_automation_app_id | GH_APP_ID;
+            cybersecurity/edgesecurity-vault-dev/kv/data/shared/ghec gh_automation_app_key | GH_APP_PRIVATE_KEY;
+
+      - uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ env.GH_APP_ID }}
+          private-key: ${{ env.GH_APP_PRIVATE_KEY }}
+          repositories: groupsec-edgesecurity-codebase
+          owner: CBA-General
+
+      - name: Check out repository code
+        uses: actions/checkout@v4
+        with:
+          repository: 'CBA-General/groupsec-edgesecurity-codebase'
+          sparse-checkout: |
+            testing/pytest_framework
+            runner/src/mtls_zero_trust_service.py
+            cf/python/src/helpers.py
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Execute tests
+        run: |      
+          export ES_AUTH_TOKEN=$(curl -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://DHPRunnerAPI" | jq -r '.value')
+          
+          pytest -vv tests/test_edgesecurity_get_api.py tests/test_edgesecurity_post_api.py --log-cli-level=${{ inputs.log-level }} -m "runnertests"
+        env:
+          APP_API_URL: ${{ inputs.tenant-dns }}
+          ES_RUNNER_HOST: ${{ needs.setup.outputs.ES_RUNNER_HOST }}
+          ES_ENV: ${{ inputs.runner-env }}
+          CF_TENANT_DOMAIN: ${{ inputs.tenant-dns }}
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results_${{ inputs.tenant-dns }}
+          path: testing/pytest_framework/pytest_results/
+
+  zephyr-upload:
+    runs-on: [default]
+    needs: [setup, test]
+    if: always() && inputs.zephyr-upload
+    steps:
+      - name: Retrieve GitHub Repo credentials
+        uses: hashicorp/vault-action@v3.0.0
+        with:
+          method: jwt
+          path: jwt_github-repository
+          url: https://vault.ai.cba
+          role: default
+          secrets: |
+            cybersecurity/edgesecurity-vault-dev/kv/data/shared/testing zephyr_key | ZEPHYR_KEY;
+
+      - name: Download test results
+        uses: actions/download-artifact@v4
+        with:
+          name: test-results_${{ inputs.tenant-dns }}
+
+      - name: Upload results to ZephyrScale
+        run: |
+          ls -R
+          zip ZephyrResults.zip zephyrscale_result.json
+          curl -H "Authorization: Bearer ${{ env.ZEPHYR_KEY }}" \
+          -F "file=@ZephyrResults.zip;type=application/x-zip-compressed" \
+          -F "testCycle={\"name\":\"ES Runner API Test [${{ inputs.runner-env }}] ${{ needs.setup.outputs.EXECUTION_DATE }}\",\"description\":\"This is an automated build for the ${{ github.repository }} Tenant ${{ inputs.runner-env }} environment.\",\"customFields\":{\"Tenant Repo\":\"https://github.com/${{ github.repository }}\",\"Tenant Zone\":\"${{ inputs.tenant-dns }}\",\"Cloudflare Environment\":\"${{ inputs.runner-env }}\",\"Actions Run\":\"https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}};type=application/json" \
+          https://api.zephyrscale.smartbear.com/v2/automations/executions/custom?projectKey=ESDE&autoCreateTestCases=false

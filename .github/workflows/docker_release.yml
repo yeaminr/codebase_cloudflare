@@ -26,20 +26,31 @@
         - 'cf/terraform/**'
         - 'cf/python/**'
         - 'cf/accounts.yml'
+        - 'cf/domain_groups.yml'
+        - 'testing/**'
+        - 'schema/**'
 
   permissions:
     id-token: write         # This is required for requesting the JWT
     contents: read          # This is required for actions/checkout
+    actions: write           # This is for snyk to be able to read the actions + delete old caches
+    statuses: read          # This is required for the security tab
+    security-events: write  # This is required to post to the security tab
+    pull-requests: read     # This is required to get the PR number
 
   env:
     IMAGE_PREFIX: terraform-runner
-
+    ES_REGISTRY: digitalprotectiongroup-edgesecurity.docker.internal.cba
+    CACHE_KEY_PREFIX: docker-buildx
+    
   jobs:
-    build-docker-and-test:
+    build-docker:
       runs-on: default
       environment:
         name: 'cloudflare_development'
-
+      outputs:
+        SNYK_SCA_BUNDLE: ${{ steps.snyk-sca-bundler.outputs.SNYK_SCA_BUNDLE }}
+    
       steps:
         - name: Checkout code
           uses: actions/checkout@v4
@@ -52,14 +63,8 @@
               url: ${{ vars.VAULT_URL }}
               role: default
               secrets: |
-                ${{ vars.VAULT_NAMESPACE }}/${{ vars.VAULT_ARTIFACTORY_PATH }}  akamai_artifactory_service_username | DOCKER_USERNAME;
-                ${{ vars.VAULT_NAMESPACE }}/${{ vars.VAULT_ARTIFACTORY_PATH }}  akamai_artifactory_service_password | DOCKER_PASSWORD;
-
-        - name: Run Unit Tests
-          run: |
-            pip install -r docker/requirements/pypkgs.txt
-            pip install cbacert --index-url="https://$DOCKER_USERNAME:$DOCKER_PASSWORD@artifactory.internal.cba/artifactory/api/pypi/cloudservices-cert-management-engineering-pypi/simple" --no-build-isolation
-            python -m pytest --ignore=testing -v
+                ${{ vars.VAULT_NAMESPACE }}/${{ vars.VAULT_ARTIFACTORY_PATH }}  cloudflare_artifactory_service_username | DOCKER_USERNAME;
+                ${{ vars.VAULT_NAMESPACE }}/${{ vars.VAULT_ARTIFACTORY_PATH }}  cloudflare_artifactory_service_password | DOCKER_PASSWORD;
 
         - name: Login to Application Infrastructure Public Artifactory
           uses: docker/login-action@v3
@@ -67,16 +72,57 @@
               registry: applicationinfrastructure-public.docker.internal.cba
               username: ${{ env.DOCKER_USERNAME }}
               password: ${{ env.DOCKER_PASSWORD }}
+        
+        # Emulate ARM64 architecture on x86 runners
+        - name: Set up QEMU
+          uses: docker/setup-qemu-action@v3
+        
+        - name: Set up Docker Buildx
+          uses: docker/setup-buildx-action@v3
 
-        - name: Build Docker image
+        - name: Create cache directory
+          run: |
+            mkdir -p /tmp/.buildx-cache
+            chmod 777 /tmp/.buildx-cache
+
+        - name: Cache Docker layers
+          uses: actions/cache@v4
+          with:
+            path: /tmp/.buildx-cache
+            key: ${{ env.CACHE_KEY_PREFIX }}-${{ github.sha }}
+            restore-keys: |
+              ${{ env.CACHE_KEY_PREFIX }}
+        
+        - name: Get image name
           run: |
             curr_datetime=$(TZ=Australia/Sydney date '+%Y%m%d.%H%M%S')
             image_name="${{ env.IMAGE_PREFIX }}:v$curr_datetime"
-            docker build --secret id=artifactory-service-password,env=DOCKER_PASSWORD --build-arg ARTIFACTORY_SERVICE_USERNAME=${{ env.DOCKER_USERNAME }} --tag $image_name -f docker/Dockerfile .
+            PULL_REQUEST_NUMBER=$(gh pr list --search "$(git rev-parse HEAD)" --state merged  --json number --jq '.[0].number')
+            if [[ -n "${PULL_REQUEST_NUMBER}" ]]; then
+              image_name="${image_name}.pr$PULL_REQUEST_NUMBER"
+            fi
+            echo "Docker image tag: $image_name"
             echo "IMAGE_NAME=$image_name" >> $GITHUB_ENV
-          env:
-            DOCKER_PASSWORD: ${{ env.DOCKER_PASSWORD }}
+          env: 
+            GH_TOKEN: ${{ github.token }}
+        
 
+        - name: Build Docker Image
+          uses: docker/build-push-action@v6
+          with:
+            context: .
+            file: ./docker/Dockerfile
+            platforms: linux/arm64
+            tags: ${{ env.IMAGE_NAME }}
+            load: true
+            cache-from: type=local,src=/tmp/.buildx-cache  # Reuse cached layers from previous builds.
+            cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max  # Save new cache layers after the build.
+            build-args: |
+              ARTIFACTORY_SERVICE_USERNAME=${{ env.DOCKER_USERNAME }}
+              RUNNER_IMAGE_TAG=${{ env.IMAGE_NAME }}
+            secrets: |
+              artifactory-service-password=${{ env.DOCKER_PASSWORD }}
+            
         - name: Run and Test Docker container
           run: |
             image_name=${{ env.IMAGE_NAME }}
@@ -91,19 +137,107 @@
             docker run $image_name bash -c "terraform -chdir=cf/terraform/cdn init"
             docker run $image_name bash -c "terraform -chdir=cf/terraform/security init"
             docker run $image_name bash -c "terraform -chdir=cf/terraform/tls init"
+            docker run $image_name bash -c "terraform -chdir=cf/terraform/mtls init"
+            docker run $image_name bash -c "terraform -chdir=cf/terraform/workers init"
+            docker run $image_name bash -c "terraform -chdir=cf/terraform/app_list init"
             docker run $image_name bash -c "cd cf/terraform/tls && ls -la"
+
+        
+        - name: Run Snyk SCA bundler
+          id: snyk-sca-bundler
+          uses: CBA-General/gha-base-templates/.github/actions/snyk-sca-bundler@snyk-sca-bundler/latest
+          
           
         - name: Login to Edge Security Artifactory
           if: github.ref == 'refs/heads/main'
           uses: docker/login-action@v3
           with:
-              registry: digitalprotectiongroup-edgesecurity.docker.internal.cba
+              registry: ${{ env.ES_REGISTRY }}
               username: ${{ env.DOCKER_USERNAME }}
               password: ${{ env.DOCKER_PASSWORD }}
 
-        - name: Push Docker image to Edge Security Artifactory
+        - name: Push Docker Image
           if: github.ref == 'refs/heads/main'
+          uses: docker/build-push-action@v6
+          with:
+            context: .
+            file: ./docker/Dockerfile
+            platforms: linux/arm64
+            tags: |
+              ${{ env.ES_REGISTRY }}/${{ env.IMAGE_PREFIX }}:latest
+              ${{ env.ES_REGISTRY }}/${{ env.IMAGE_NAME }}
+            push: true
+            cache-from: type=local,src=/tmp/.buildx-cache  # Reuse cached layers from previous builds.
+            cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max  # Save new cache layers after the build.
+            build-args: |
+              ARTIFACTORY_SERVICE_USERNAME=${{ env.DOCKER_USERNAME }}
+              RUNNER_IMAGE_TAG=${{ env.IMAGE_NAME }}
+            secrets: |
+              artifactory-service-password=${{ env.DOCKER_PASSWORD }}
+
+        # https://github.com/docker/build-push-action/issues/252#issuecomment-744400434
+        - name: Update cache
           run: |
-            image_name=${{ env.IMAGE_NAME }}
-            docker tag $image_name digitalprotectiongroup-edgesecurity.docker.internal.cba/$image_name
-            docker push digitalprotectiongroup-edgesecurity.docker.internal.cba/$image_name
+            rm -rf /tmp/.buildx-cache         # Remove the old cache.
+            mv /tmp/.buildx-cache-new /tmp/.buildx-cache  # Move the new cache to replace the old cache.
+
+        # https://medium.com/@eelzinaty/enhancing-developer-experience-accelerating-docker-image-builds-by-90-using-github-actions-cache-839acf09196c
+        - name: Cleanup old caches
+          continue-on-error: true
+          run: |
+            echo "Deleting caches..."
+            cacheKeysForBranch=$(gh cache list -R $REPO -r $BRANCH -L 100 -k ${{ env.CACHE_KEY_PREFIX }} --json id,key,createdAt)
+            echo "Cache keys for branch: $cacheKeysForBranch"
+
+            echo $cacheKeysForBranch | jq -c '.[]' | while IFS= read -r cache; 
+            do
+              key=$(echo $cache | jq -r '.key')
+              if [[ $key == ${{ env.CACHE_KEY_PREFIX }}-${{ github.sha }} ]]; then
+                echo "Skipping deleting the cache created by this workflow run: $key"
+              else
+                echo "Deleting cache $key"
+                gh cache delete $key -R $REPO 
+              fi
+            done
+
+          env:
+            GH_TOKEN: ${{ github.token }}
+            REPO: ${{ github.repository }}
+            BRANCH: ${{ github.ref }}
+
+    unit-test:
+      runs-on: default
+      environment:
+        name: 'cloudflare_development'
+      steps:
+        - name: Checkout code
+          uses: actions/checkout@v4
+        - name: Fetch Creds from Vault
+          uses: hashicorp/vault-action@v3
+          with:
+              method: jwt
+              path: jwt_github-repository
+              url: ${{ vars.VAULT_URL }}
+              role: default
+              secrets: |
+                ${{ vars.VAULT_NAMESPACE }}/${{ vars.VAULT_ARTIFACTORY_PATH }}  cloudflare_artifactory_service_username | DOCKER_USERNAME;
+                ${{ vars.VAULT_NAMESPACE }}/${{ vars.VAULT_ARTIFACTORY_PATH }}  cloudflare_artifactory_service_password | DOCKER_PASSWORD;
+        - name: Run Unit Tests
+          run: |
+            pip install -r docker/requirements/pypkgs.txt --break-system-packages
+            pip install cbacert --index-url="https://$DOCKER_USERNAME:$DOCKER_PASSWORD@artifactory.internal.cba/artifactory/api/pypi/cloudservices-cert-management-engineering-pypi/simple" --no-build-isolation --break-system-packages
+            python -m pytest --ignore=testing -v
+            
+
+    cba-snyk-scan:
+      needs: build-docker # optional for SAST, required for SCA using composite action - Name of the step that builds your application
+      uses: CBA-General/gha-base-templates/.github/workflows/reusable-snyk-scan.yaml@wfs/latest
+      with:
+        build-break: false
+        build-break-threshold: medium # optional
+        debug-mode: false # optional
+        sast-opt-out: false
+        sca-opt-out: true
+        exclusions: "akamai,pov," # optional. comma-separated dir to exclude for scan e.g. exclusions=app,web,asset
+        inclusions: "docker/requirements/,runner/src/" # optional. comma-separated folder path to scan ending with / e.g. inclusions=src/webapp/,src/database/
+        snyk-sca-bundle-name: ${{ needs.build-docker-and-test.outputs.SNYK_SCA_BUNDLE }}
