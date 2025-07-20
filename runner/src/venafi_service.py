@@ -1,3 +1,6 @@
+"""
+Module to interact with Venafi API for certificate management.
+"""
 import base64
 import json
 import logging
@@ -13,20 +16,17 @@ def refresh_venafi_cert(
     env: str,
     signer: str,
     tso: str,
-    expiresin: int,
     sans: list,
 ) -> str:
     """
-    Refresh (creats/renews) a certificate from Venafi using the CSR generated
+    Refresh (creats) a certificate from Venafi using the CSR generated
 
     Args:
     ----
     csr_input (dict): CSR input - common_name, csr, id
     env (str): environment to target
-    signer (str): signer to use. can be either ext (digicert) or ext-ev (entrust)
-                  prod must be ext-ev
+    signer (str): signer to use. can be either ext or ext-ev
     tso (str): TSO to use
-    expiresin (int): expiry in days
     sans (list): list of SANs
 
     Returns:
@@ -49,37 +49,32 @@ def refresh_venafi_cert(
         )
     idp_private_key = api_constant.idp_private_key
     if not idp_private_key:
-        raise exceptions.VenafiServiceException("Venafi private key is not set")
-    client_id = api_constant.VENAFI_CLIENT_ID
-    cba_cert = cbacert(client_id, idp_private_key, prod=False)  # targetting non prod
-
-    # default signer if not provided
-    if not signer:
-        if env.lower() == "prod":
-            signer = "ext-ev"
-        else:
-            signer = "ext"
+        raise exceptions.VenafiServiceException(
+            "Venafi private key is not set")
+    client_id = api_constant.venafi_client_id
+    if not client_id:
+        raise exceptions.VenafiServiceException("Venafi client ID is not set")
 
     # validate signer
-    signer = signer.lower()
-    if signer not in ["ext", "ext-ev"]:
+    if not signer or signer not in ["ext", "ext-ev"]:
         raise exceptions.VenafiServiceException(
             f"Invalid signer provided: {signer}. Must be either ext or ext-ev"
         )
-    if signer == "ext" and env.lower() == "prod":
-        raise exceptions.VenafiServiceException(
-            "Invalid signer provided for prod environment. Must be ext-ev"
-        )
+
+    is_prod = False
+    if env.lower() == "prd":
+        is_prod = True
+
+    cba_cert = cbacert(client_id, idp_private_key, prod=is_prod)
 
     # issue certificate
     post_body = {
         "subject": csr_input["common_name"],
         "csr": csr_input["csr"],
         "cadn": signer,  # For internal cert do not use signer (cadn)
-        "expiresin": expiresin,
         "name": csr_input["id"],
         "san": [{"TypeName": 2, "Name": san} for san in sans],
-        "tsosn": tso,  # Needs to be tested with different TSO
+        "tso": tso,  # Needs to be tested with different TSO
     }
     logger.info("Venafi payload: %s", post_body)
     try:
@@ -103,7 +98,7 @@ def refresh_venafi_cert(
         ) from e
 
 
-def retrieve_venafi_cert(csr_input: dict, tso: str) -> str | None:
+def retrieve_venafi_cert(csr_input: dict, tso: str, env: str) -> str | None:
     """
     Retrieve a certificate from Venafi using the CSR generated
 
@@ -111,6 +106,7 @@ def retrieve_venafi_cert(csr_input: dict, tso: str) -> str | None:
     ----
     csr_input (dict): CSR input - common_name, csr, id
     tso (str): TSO to use
+    env (str): environment to target
 
     Returns:
     ----
@@ -132,13 +128,19 @@ def retrieve_venafi_cert(csr_input: dict, tso: str) -> str | None:
         )
     idp_private_key = api_constant.idp_private_key
     if not idp_private_key:
-        raise exceptions.VenafiServiceException("Venafi private key is not set")
-    client_id = api_constant.VENAFI_CLIENT_ID
-    cba_cert = cbacert(client_id, idp_private_key, prod=False)  # targetting non prod
+        raise exceptions.VenafiServiceException(
+            "Venafi private key is not set")
+    client_id = api_constant.venafi_client_id
+    if not client_id:
+        raise exceptions.VenafiServiceException("Venafi client ID is not set")
+    is_prod = False
+    if env.lower() == "prd":
+        is_prod = True
+    cba_cert = cbacert(client_id, idp_private_key, prod=is_prod)
     retrieve_body = {
         "subject": csr_input["common_name"],
         "name": csr_input["id"],
-        "tsosn": tso,  # Needs to be tested with different TSO
+        "tso": tso,  # Needs to be tested with different TSO
     }
     logger.info("Venafi payload: %s", retrieve_body)
     try:
