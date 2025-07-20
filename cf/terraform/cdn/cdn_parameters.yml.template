@@ -1,8 +1,18 @@
 # yaml-language-server: $schema=../../../schema/cdn_parameters_schema.yml
 
+origin_dns_records:
+  - name: "@"
+    proxied: true
+    content: "edgesecurity.dev.origin.commbank"
+    type: "CNAME"
+    ttl: 1
+    tags:
+      - "dev"
+      - "appname1"
+
 managed_request_headers:
   - add_true_client_ip_headers
-  - remove_visitor_ip_headers
+  - add_client_certificate_headers
 
 managed_response_headers: []
 
@@ -13,31 +23,80 @@ cache_settings:
     cache: true
     edge_ttl_mode: bypass_by_default
     origin_cache_control: true
+    enabled: true
   - name: downstream-cacheability-webapp
     description: Downstream Cacheability webapp
     expression: "true"
     cache: false
     browser_ttl_mode: respect_origin
+    enabled: true
+  # - name: general-cache-settings
+  #   description: General Cache Settings
+  #   expression: "true"
+  #   enabled: false #default is true
+  #   cache: true
+  #   respect_strong_etags: true
+  #   origin_error_page_passthru: true
+  #   additional_cacheable_ports: [80, 443]
+  #   read_timeout: 30
+  #   edge_ttl_mode: override_origin # respect_origin, bypass_by_default, override_origin
+  #   edge_ttl_default: 86400
+  #   edge_ttl_status_code_settings:
+  #     - code: 404
+  #       value: 86400
+  #     - from: 500
+  #       to: 599
+  #       value: 0
+  #   browser_ttl_mode: respect_origin # override_origin, respect_origin, bypass
+  #   browser_ttl_default: 86400
+  #   disable_stale_while_updating: true
+  #   origin_cache_control: true
+  #   cache_key_settings:
+  #     - ignore_query_strings_order: true
+  #       cache_deception_armor: true
+  #       cache_by_device_type: true
+  #       custom_key_enabled: true
+  #       cookie_include: ["cookie1", "cookie2"]
+  #       cookie_presence: ["cookie3", "cookie4"]
+  #       header_include: ["header1", "header2"]
+  #       header_presence: ["header3", "header4"]
+  #       header_exclude_origin: true
+  #       header_contains :
+  #         "accept" : ["application/json", "application/xml"]
+  #       host_resolved: true
+  #       # query_string_include: ["query1", "query2"]
+  #       query_string_exclude: ["query3", "query4"]
+  #       # user_key: device_type # device_type, geo, langs
 
-configuration_settings:
-  - name: configuration-rules-webapp
-    description: Configuration rules webapp
+tiered_cache_settings: "smart"
+
+regional_tiered_cache_settings: "on"
+
+request_header_late_transform_settings:
+  - description: TLS_version_and_cipher
     expression: "true"
-    automatic_https_rewrites: true
-    bic: true
-    ssl: "full"
-
-origin_settings:
-  - name: origin-rules-webapp
-    description: Origin rules webapp
+    action: "rewrite"
+    enabled: true
+    headers:
+      - name: header-1
+        operation: set
+        value: Cloudflare
+      - name: header-2
+        operation: remove
+      - name: "Custom-Header"
+        operation: set
+        expression: "concat(\"Cipher =\",cf.tls_cipher, \", TLS=\",cf.tls_version)"
+  - description: "send mTLS to origin"
     expression: "true"
-    origin_port: 443
-
-compression_settings:
-  - name: default-compression-settings
-    description: Compression settings webapp
-    expression: '(http.response.content_type.media_type in {"text/html" "text/richtext" "text/plain" "text/css" "text/x-script" "text/x-component" "text/x-java-source" "text/x-markdown" "application/javascript" "application/x-javascript" "text/javascript" "text/js" "image/x-icon" "image/vnd.microsoft.icon" "application/x-perl" "application/x-httpd-cgi" "text/xml" "application/xml" "application/rss+xml" "application/vnd.api+json" "application/x-protobuf" "application/json" "multipart/bag" "multipart/mixed" "application/xhtml+xml" "font/ttf" "font/otf" "font/x-woff" "image/svg+xml" "application/vnd.ms-fontobject" "application/ttf" "application/x-ttf" "application/otf" "application/x-otf" "application/truetype" "application/opentype" "application/x-opentype" "application/font-woff" "application/eot" "application/font" "application/font-sfnt" "application/wasm" "application/javascript-binast" "application/manifest+json" "application/ld+json" "application/graphql+json" "application/geo+json"})'
-    algorithms: ["gzip", "auto"]
+    action: "rewrite"
+    enabled: true
+    headers:
+      - name: "SSLClientCertCN"
+        operation: set
+        expression: "regex_replace(cf.tls_client_auth.cert_subject_dn, \"CN=([^,]+),.*$\", \"$${1}\")"
+      - expression: "cf.tls_client_auth.cert_fingerprint_sha1"
+        name: "SSLClientCertThumbPrint"
+        operation: "set"
 
 page_rules:
   - name: default-page-rule
@@ -46,13 +105,101 @@ page_rules:
     cache_ttl_by_status:
       - status: 301-302
         ttl: 0
+    enabled: false
 
 redirect_settings:
   - name: redirect-rule-1
     description: Redirect rule 1
-    expression: (http.host eq \"example.host.com\")
+    expression: "(http.host eq \"example.host.com\")"
     enabled: false
     status_code: 301
-    target_url: "https://example.com"
+    # target_url: "https://example.com"
+    target_url_expression: "concat(\"https://\", http.host, http.request.uri.path, http.request.uri.query)"
     preserve_query_string: true
-    
+
+http_request_sanitize:
+  action: "execute"
+  expression: "true"
+  enabled: true
+  action_parameters:
+    id: "70339d97bdb34195bbf054b1ebe81f76"
+    overrides:
+      rules:
+        - id: "78723a9e0c7c4c6dbec5684cb766231d"
+          enabled: false
+        - id: "b232b534beea4e00a21dcbb7a8a545e9"
+          enabled: false
+        - id: "20e18610e4a048d6b87430b3cb2d89a3"
+          enabled: true
+        - id: "60444c0705d4438799584a15cca2cb7d"
+          enabled: false
+
+custom_pages:
+  - type: "waf_block" #basic_challenge, waf_challenge, waf_block, ratelimit_block, country_challenge, ip_block, under_attack, 500_errors, 1000_errors, managed_challenge
+    url: "https://4e1f4cf3.cba-error-page-1000.pages.dev"
+    state: "customized" #customized or default
+#  - type: "500_errors"
+#    url: "https://4e1f4cf3.cba-error-page-1000.pages.dev"
+#    state: "customized"
+  - type: "1000_errors"
+    url: "https://4e1f4cf3.cba-error-page-1000.pages.dev"
+    state: "customized"
+
+# origin_settings:
+#   - name: origin-rules-webapp
+#     description: Origin rules webapp
+#     expression: "true"
+#     enabled: true
+#     host_header: "example.com"  #optional
+#     origin:                     #optional
+#       host: "example.com"       #optional
+#       port: 443                 #optional
+#     sni:                        #optional
+#       value: "example.com"      #optional
+
+# configuration_settings:
+#   - name: configuration-rules-webapp
+#     description: Configuration rules webapp
+#     enabled: true
+#     expression: "true"
+#     automatic_https_rewrites: true      #optional
+#     bic: true                           #optional
+#     ssl: "full"                         #optional
+#     mirage: true                        #optional
+#     polish: "lossy"                     #optional
+#     fonts: true                         #optional
+#     hotlink_protection: true            #optional
+#     rocket_loader: true                 #optional
+#     email_obfuscation: true             #optional
+
+# url_rewrite_settings:
+#   - description: "Example of URL Rewrite rule"
+#     expression: "(http.request.uri.path contains \"/test_path\")"
+#     enabled: true
+#     uri_path:
+#       #Use "expression" for dynamic rewrite and "value" for static rewrite
+#       expression: "concat(\"/archive\", http.request.uri.path)"
+#     # uri_query:
+#     #   Use "expression" for dynamic rewrite and "value" for static rewrite
+#     #   value:
+
+# response_header_transform_settings:
+#   - description: "Add Static Header to Response [Template]"
+#     expression: "true"
+#     action: "rewrite"
+#     enabled: true
+#     headers:
+#       - name: "GeoBlocked"
+#         operation: "add"
+#         value: "true"
+#       - name: "True-Client-Port"
+#         operation: "set"
+#         expression: "cf.edge.client_port"
+
+compression_settings:
+  - name: default-compression-settings
+    description: Compression settings webapp
+    expression: "(http.response.content_type.media_type in {\"text/html\" \"text/javascript\" } or http.response.content_type.media_type matches r\"text/css.*\" or http.response.content_type.media_type matches r\"application/x-javascript.*\")"
+    algorithms: #     values supported: default, none, auto, zstd, brotli, gzip
+      - "auto"
+    enabled: true

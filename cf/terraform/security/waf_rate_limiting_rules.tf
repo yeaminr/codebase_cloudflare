@@ -27,9 +27,9 @@ resource "cloudflare_ruleset" "rate_limit_ruleset" {
         requests_to_origin  = lookup(rules.value, "requests_to_origin", true)
         counting_expression = lookup(rules.value, "counting_expression", null)
       }
-      expression  = (rules.value.expression != "") ? rules.value.expression : "(http.request.uri.path eq \"/\")"
+      expression  = rules.value.expression
       description = rules.value.description
-      enabled     = (rules.value.enabled != "") ? rules.value.enabled : true
+      enabled     = lookup(rules.value, "enabled", true)
     }
   }
 

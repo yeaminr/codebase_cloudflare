@@ -18,6 +18,28 @@ resource "cloudflare_ruleset" "waf_custom_ruleset" {
       expression  = rules.value.expression
       description = rules.value.description
       enabled     = lookup(rules.value, "enabled", true)
+      dynamic "action_parameters" {
+        for_each = lookup(rules.value, "action_parameters", null) != null ? [1] : []
+        content {
+          phases   = lookup(rules.value.action_parameters, "phases", null)
+          products = lookup(rules.value.action_parameters, "products", null)
+          ruleset  = lookup(rules.value.action_parameters, "ruleset", null)
+          dynamic "response" {
+            for_each = lookup(rules.value.action_parameters, "response", null) != null ? [1] : []
+            content {
+              content      = lookup(rules.value.action_parameters.response, "content", null)
+              content_type = lookup(rules.value.action_parameters.response, "content_type", null)
+              status_code  = lookup(rules.value.action_parameters.response, "status_code", null)
+            }
+          }
+        }
+      }
+      dynamic "logging" {
+        for_each = lookup(rules.value, "logging", null) != null ? [1] : []
+        content {
+          enabled = lookup(rules.value.logging, "enabled", true)
+        }
+      }
     }
   }
 
