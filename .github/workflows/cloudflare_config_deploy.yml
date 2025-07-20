@@ -14,35 +14,43 @@ on:
         description: 'Zone name to deploy the config file'
         required: true
         type: string
-        
-env:
-  DHP_RUNNER_ENDPOINT: https://d-s-es1-app-alb.chpcyberp1dev01.aws.test.au.internal.cba
+      change_number:
+        description: 'ServiceNow Change Number. Required for Production deployment.'
+        required: false
+        type: string
 
 permissions:
   id-token: write         # This is required for requesting the JWT
   contents: read          # This is required for checking out the code
 
 jobs:
-  setup:
+  validate:
     runs-on: [default]
+    outputs:
+      DHP_RUNNER_ENDPOINT: ${{ steps.runner-endpoint.outputs.DHP_RUNNER_ENDPOINT }}
     steps:
       - name: Check out tenant repository
         uses: actions/checkout@v4
 
-      - name: Validate config file exists
+      - name: Validate Input & Check config file exists
         id: vars
         run: |
           environment=${{ github.event.inputs.environment }}
           config_type=${{ github.event.inputs.config_type }}
           zone_name=${{ github.event.inputs.zone_name }}
-
+          change_number=${{ github.event.inputs.change_number }}
+          # Check if change number is provided for Production deployment
+          if [[ "${environment}" == "prd" && -z "${change_number}" ]]; then
+            echo "Change number is required for Production deployment"
+            exit 1
+          fi
           if [[ "${config_type}" == "zone" ]]; then
             # Check zone file exists
             if [[ ! -f "${environment}/${zone_name}/zone_parameters.yml" ]]; then
               echo "Zone $zone_name parameters file does not exist"
               exit 1
             fi
-          elif [[ "${config_type}" == "cdn" || "${config_type}" == "security" || "${config_type}" == "tls" || "${config_type}" == "cert" ]]; then
+          elif [[ "${config_type}" == "cdn" || "${config_type}" == "security" || "${config_type}" == "tls" || "${config_type}" == "cert" || "${config_type}" == "mtls" || "${config_type}" == "workers" || "${config_type}" == "app_list" ]]; then
             # Check config file exists
             if [[ ! -f "${environment}/${zone_name}/${config_type}/${config_type}_parameters.yml" ]]; then
               echo "Config file $config_type does not exist"
@@ -52,32 +60,143 @@ jobs:
             echo "Invalid config type"
             exit 1
           fi
-      - name: Validate yamls
-        run: |
-          echo "Invoke DHP api to validate the yaml files"        
 
+      - name: Check AWS DNS env
+        if: ${{ github.event.inputs.config_type == 'zone' }}
+        id: check-aws-dns-env
+        run: |
+          environment=${{ github.event.inputs.environment }}
+          zone_name=${{ github.event.inputs.zone_name }}
+          echo "Parse zone yaml to get dns_env attribute"
+          dns_env=$(yq eval '.dns_env' "${environment}/${zone_name}/zone_parameters.yml")
+          echo "dns_env: $dns_env"
+          if [[ -z "$dns_env" ]]; then
+            echo "DNS environment is not set in the zone parameters file"
+            echo "Do nothing"
+          else
+            if [[ "$environment" == "dev" && "$dns_env" == "prod" ]]; then
+              echo "Error: DNS environment is set to 'prod' in zone_parameters.yml for 'dev' environment"
+              exit 1
+            elif [[ "$environment" == "prd" && "$dns_env" == "nonprod" ]]; then
+              echo "Error: DNS environment is set to 'nonprod' in zone_parameters.yml for 'prd' environment"
+              exit 1
+            elif [[ "$environment" == "prd" || "$dns_env" == "prod" ]]; then
+              echo "Checking current time in Australia/Sydney timezone for 'prod' DNS environment"
+              export TZ="Australia/Sydney"
+              current_time=$(date +%-H)
+              echo "Current time in 24-hour format: $current_time"
+              if [[ "$current_time" -ge 20 ]]; then
+                echo "DNS environment is 'prod' and current time is after 8 PM. Config deploy can go ahead."
+              else
+                echo ":warning: **WARNING:** Workflow is running for AWS DNS **prod** environment which is not after 8 PM." >> $GITHUB_STEP_SUMMARY
+              fi
+            fi
+          fi
+
+      - name: Define DHP Runner Endpoint
+        id: runner-endpoint
+        run: |
+          environment=${{ github.event.inputs.environment }}
+          echo "environment: $environment"
+
+          if [[ $environment == "dev" ]]; then
+            RUNNER_ENDPOINT="https://d-s-es1-app-alb.chpcyberp1dev01.aws.test.au.internal.cba"
+          elif [[ $environment == "tst" ]]; then
+            RUNNER_ENDPOINT="https://t2-s-es1-app-alb.chpcyberp1t201.aws.test.au.internal.cba"
+          elif [[ $environment == "stg" ]]; then
+            RUNNER_ENDPOINT="https://s-s-es1-app-alb.chpcyberp1stg01.aws.test.au.internal.cba"
+          elif [[ $environment == "prd" ]]; then
+            RUNNER_ENDPOINT="https://p-s-es1-app-alb.chpcyberp1prd01.aws.prod.au.internal.cba"
+          else
+            echo "Invalid environment"
+            exit 1
+          fi
+          echo "DHP_RUNNER_ENDPOINT for $environment: $RUNNER_ENDPOINT"
+
+          # exporting the DHP_RUNNER_ENDPOINT as an output
+          # Ref: https://docs.github.com/en/actions/learn-github-actions/workflow-commands-for-github-actions#setting-an-output-parameter
+          # Ref: https://github.blog/changelog/2022-10-11-github-actions-deprecating-save-state-and-set-output-commands/
+          echo "DHP_RUNNER_ENDPOINT=$RUNNER_ENDPOINT" >> $GITHUB_OUTPUT
+      
+      - name: Validate yaml
+        id: validate-yaml
+        continue-on-error: true # Enabled to allow the workflow to continue even if the validation fails as schema yaml for validation needs to be matured
+        run: |
+          echo "Invoke DHP api to validate the config yaml file"
+          environment=${{ github.event.inputs.environment }}
+          config_type=${{ github.event.inputs.config_type }}
+          zone_name=${{ github.event.inputs.zone_name }}
+          change_number=${{ github.event.inputs.change_number }}
+          DHP_RUNNER_ENDPOINT=${{ steps.runner-endpoint.outputs.DHP_RUNNER_ENDPOINT }}
+
+          if [[ $environment != "prd" ]]; then
+            # Generate ID token
+            id_token=$(curl -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://DHPRunnerAPI" | jq -r '.value')
+
+            echo "Invoke DHP api to validate the config yaml file"
+            # Invoke DHP Api for validation
+            validate_response_status_code=$(curl -X GET "$DHP_RUNNER_ENDPOINT/runner/validate/${config_type}/${environment}?fqdn=${zone_name}&change_number=${change_number}" -H 'accept: application/json' -H 'Content-Type: application/json' -H "X-Github-Auth-Header: Bearer $id_token" -s -o output.json -D header.txt -w "%{http_code}")
+            # Print the output
+            cat output.json | jq
+            # echo "#### YAML Validation Result:" >> $GITHUB_STEP_SUMMARY
+            # echo "<pre><code>$(cat output.json | jq)</code></pre>" >> $GITHUB_STEP_SUMMARY
+            # Print the header
+            echo "============"
+            echo "===Header==="
+            echo "============"
+            cat header.txt
+
+            # Check if the validation was successful
+            if [[ "${validate_response_status_code}" != "200" ]]; then
+              echo "Error in executing plan"
+              exit 1
+            else
+              echo "Validation successful for $config_type in $environment"
+            fi
+          fi
+
+  
   plan-config:
     runs-on: [default]
-    needs: setup
+    needs: validate
     steps:
       - name: Plan zone ${{ github.event.inputs.zone_name }} config update - ${{ github.event.inputs.config_type }}
         run: |
           environment=${{ github.event.inputs.environment }}
           config_type=${{ github.event.inputs.config_type }}
           zone_name=${{ github.event.inputs.zone_name }}
+          DHP_RUNNER_ENDPOINT=${{ needs.validate.outputs.DHP_RUNNER_ENDPOINT }}
+          echo "DHP_RUNNER_ENDPOINT: $DHP_RUNNER_ENDPOINT"
           
           # Generate ID token
           id_token=$(curl -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://DHPRunnerAPI" | jq -r '.value')
           
           # Invoke DHP Api for Plan
-          plan_response_status_code=$(curl -X GET "${{ env.DHP_RUNNER_ENDPOINT }}/runner/${config_type}/${environment}?fqdn=${zone_name}" -H 'accept: application/json' -H 'Content-Type: application/json' -H "X-Github-Auth-Header: Bearer $id_token" -s -o output.json -w "%{http_code}")
+          plan_response_status_code=$(curl -X GET "$DHP_RUNNER_ENDPOINT/runner/${config_type}/${environment}?fqdn=${zone_name}" -H 'accept: application/json' -H 'Content-Type: application/json' -H "X-Github-Auth-Header: Bearer $id_token" -s -o output.json -D header.txt -w "%{http_code}")
 
           # Print the output
           if [[ "${config_type}" == "cert" ]]; then
-            cat output.json | jq
+            cat output.json | jq 
+          elif [[ "${config_type}" == "mtls" ]]; then
+            echo "===Terraform Planned Changes==="
+            cat output.json | jq -r '.terraform_stdout'
+            echo "===Current Certs State==="
+            cat output.json | jq -r '.current_state'
+            echo "===Certs To Add==="
+            cat output.json | jq -r '.certs_to_add'
+            echo "===Certs To Remove==="
+            cat output.json | jq -r '.certs_to_remove'
+            echo "===Error==="
+            cat output.json | jq -r '.detail'
           else
             cat output.json | jq -r '.detail'
           fi
+
+          # Print the header
+          echo "============"
+          echo "===Header==="
+          echo "============"
+          cat header.txt
 
           # Check if the plan was successful
           if [[ "${plan_response_status_code}" != "200" ]]; then
@@ -86,37 +205,90 @@ jobs:
           else
             echo "Plan executed successfully"
           fi
-
+      
   deploy-config:
     runs-on: [default]
     if: github.ref == 'refs/heads/main'
-    needs: [setup, plan-config]
+    needs: [validate, plan-config]
     environment: main
     steps:
-      - name: Deply zone ${{ github.event.inputs.zone_name }} config update - ${{ github.event.inputs.config_type }}
+      - name: Deploy zone ${{ github.event.inputs.zone_name }} config update - ${{ github.event.inputs.config_type }}
         if: github.ref == 'refs/heads/main'
         run: |
           environment=${{ github.event.inputs.environment }}
           config_type=${{ github.event.inputs.config_type }}
           zone_name=${{ github.event.inputs.zone_name }}
+          change_number=${{ github.event.inputs.change_number }}
+          DHP_RUNNER_ENDPOINT=${{ needs.validate.outputs.DHP_RUNNER_ENDPOINT }}
+          echo "DHP_RUNNER_ENDPOINT: $DHP_RUNNER_ENDPOINT"
           
           # Generate ID token
           id_token=$(curl -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://DHPRunnerAPI" | jq -r '.value')
           
           # Invoke DHP Api for Apply
-          apply_response_status_code=$(curl -X POST "${{ env.DHP_RUNNER_ENDPOINT }}/runner/${config_type}/${environment}?fqdn=${zone_name}" -H 'accept: application/json' -H 'Content-Type: application/json' -H "X-Github-Auth-Header: Bearer $id_token" -s -o output.json -w "%{http_code}")
+          if [[ -z "${change_number}" ]]; then
+            echo "Applying config ${config_type} for environment ${environment}"
+            apply_response_status_code=$(curl -X POST "$DHP_RUNNER_ENDPOINT/runner/${config_type}/${environment}?fqdn=${zone_name}" -H 'accept: application/json' -H 'Content-Type: application/json' -H "X-Github-Auth-Header: Bearer $id_token" -s -o output.json -D header.txt -w "%{http_code}")
+            echo "Response status code: $apply_response_status_code"
+            if [[ "${config_type}" == "tls" ]]; then
+              echo "Applying TLS config for second time"
+              apply_response_status_code2=$(curl -X POST "$DHP_RUNNER_ENDPOINT/runner/${config_type}/${environment}?fqdn=${zone_name}" -H 'accept: application/json' -H 'Content-Type: application/json' -H "X-Github-Auth-Header: Bearer $id_token" -s -o output2.json -D header2.txt -w "%{http_code}")
+              echo "Response status code (second time): $apply_response_status_code2"
+            fi
+          else
+            echo "Applying config ${config_type} for environment ${environment} with change number ${change_number}"
+            apply_response_status_code=$(curl -X POST "$DHP_RUNNER_ENDPOINT/runner/${config_type}/${environment}?fqdn=${zone_name}&change_number=${change_number}" -H 'accept: application/json' -H 'Content-Type: application/json' -H "X-Github-Auth-Header: Bearer $id_token" -s -o output.json -D header.txt -w "%{http_code}")
+            echo "Response status code : $apply_response_status_code"
+            if [[ "${config_type}" == "tls" ]]; then
+              echo "Applying TLS config for second time"
+              apply_response_status_code2=$(curl -X POST "$DHP_RUNNER_ENDPOINT/runner/${config_type}/${environment}?fqdn=${zone_name}&change_number=${change_number}" -H 'accept: application/json' -H 'Content-Type: application/json' -H "X-Github-Auth-Header: Bearer $id_token" -s -o output2.json -D header2.txt -w "%{http_code}")
+              echo "Response status code (second time): $apply_response_status_code2"
+            fi
+          fi
 
           # Print the output
           if [[ "${config_type}" == "cert" ]]; then
             cat output.json | jq
+          elif [[ "${config_type}" == "mtls" ]]; then
+            echo "===Terraform Applied Changes==="
+            cat output.json | jq -r '.terraform_stdout'
+            echo "===New Certs State==="
+            cat output.json | jq -r '.current_state'
+            echo "===Error==="
+            cat output.json | jq -r '.detail'
+          elif [[ "${config_type}" == "tls" ]]; then
+            cat output.json | jq -r '.detail'
+            cat output2.json | jq -r '.detail'
           else
             cat output.json | jq -r '.detail'
           fi
+
+          # Print the header
+          echo "============"
+          echo "===Header==="
+          echo "============"
+          cat header.txt
+          if [[ "${config_type}" == "tls" ]]; then
+            echo "============"
+            echo "===Header2==="
+            echo "============"
+            cat header2.txt
+          fi
           
           # Check if the apply was successful
-          if [[ "${apply_response_status_code}" != "200" ]]; then
-            echo "Error in executing apply"
-            exit 1
+          if [[ "${config_type}" == "tls" ]]; then
+            if [[ "${apply_response_status_code}" != "200" && "${apply_response_status_code2}" != "200" ]]; then
+              echo "Error in executing apply"
+              exit 1
+            else
+              echo "Apply executed successfully"
+            fi
           else
-            echo "Apply executed successfully"
+            if [[ "${apply_response_status_code}" != "200" ]]; then
+              echo "Error in executing apply"
+              exit 1
+            else
+              echo "Apply executed successfully"
+            fi
           fi
+          

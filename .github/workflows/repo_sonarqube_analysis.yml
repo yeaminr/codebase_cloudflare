@@ -32,13 +32,13 @@ jobs:
           secrets: |
             ${{ vars.VAULT_NAMESPACE }}/${{ vars.VAULT_SONARQUBE_PATH }} sonarqube_token | SONAR_TOKEN;
             ${{ vars.VAULT_NAMESPACE }}/${{ vars.VAULT_SONARQUBE_PATH }} sonarqube_host_url | SONAR_HOST_URL;
-            ${{ vars.VAULT_NAMESPACE }}/${{ vars.VAULT_ARTIFACTORY_PATH }}  akamai_artifactory_service_username | DOCKER_USERNAME;
-            ${{ vars.VAULT_NAMESPACE }}/${{ vars.VAULT_ARTIFACTORY_PATH }}  akamai_artifactory_service_password | DOCKER_PASSWORD;
+            ${{ vars.VAULT_NAMESPACE }}/${{ vars.VAULT_ARTIFACTORY_PATH }}  cloudflare_artifactory_service_username | DOCKER_USERNAME;
+            ${{ vars.VAULT_NAMESPACE }}/${{ vars.VAULT_ARTIFACTORY_PATH }}  cloudflare_artifactory_service_password | DOCKER_PASSWORD;
             
       - name: Install python dependencies
         run: |
-          pip install -r docker/requirements/pypkgs.txt
-          pip install cbacert --index-url="https://$DOCKER_USERNAME:$DOCKER_PASSWORD@artifactory.internal.cba/artifactory/api/pypi/cloudservices-cert-management-engineering-pypi/simple" --no-build-isolation
+          pip install -r docker/requirements/pypkgs.txt --break-system-packages
+          pip install cbacert --index-url="https://$DOCKER_USERNAME:$DOCKER_PASSWORD@artifactory.internal.cba/artifactory/api/pypi/cloudservices-cert-management-engineering-pypi/simple" --no-build-isolation --break-system-packages
         
       - name: Run code coverage
         run: |
@@ -49,5 +49,4 @@ jobs:
       - uses: sonarsource/sonarqube-scan-action@v3.1.0
         env:
           SONAR_TOKEN: ${{ env.SONAR_TOKEN }}
-          SONAR_ROOT_CERT: ${{ vars.SONAR_ROOT_CERT }}
           SONAR_HOST_URL: ${{ env.SONAR_HOST_URL }}

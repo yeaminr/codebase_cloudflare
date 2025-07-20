@@ -1,0 +1,109 @@
+name: 'Cloudflare cf-terraforming'
+on:
+  workflow_call
+
+permissions:
+  id-token: write         # This is required for requesting the JWT
+  contents: read          # This is required for checking out the code
+
+jobs:
+  setup-and-run-cf-terraforming:
+    name: cf-terraforming - ${{ matrix.environment }} - ${{ matrix.resource_type }}
+    runs-on: [default]
+    strategy:
+      fail-fast: false  # Do not stop the job if one of the matrix jobs fails
+      matrix:
+        environment: [dev, tst, stg, prd]
+        resource_type: [all]
+    steps:
+      - name: Check out tenant repository
+        uses: actions/checkout@v4
+
+      - name: Run cf-terraforming to find new resources
+        run: |
+          environment=${{ matrix.environment }}
+          resource_type=${{ matrix.resource_type }}
+          echo "environment: "$environment
+          echo "resource_type: "$resource_type
+
+          if [[ $environment == "dev" ]]; then
+            ESM_RUNNER_ENDPOINT="https://d-s-es1-app-alb.chpcyberp1dev01.aws.test.au.internal.cba"
+          elif [[ $environment == "tst" ]]; then
+            ESM_RUNNER_ENDPOINT="https://t2-s-es1-app-alb.chpcyberp1t201.aws.test.au.internal.cba"
+          elif [[ $environment == "stg" ]]; then
+            ESM_RUNNER_ENDPOINT="https://s-s-es1-app-alb.chpcyberp1stg01.aws.test.au.internal.cba"
+          elif [[ $environment == "prd" ]]; then
+            ESM_RUNNER_ENDPOINT="https://p-s-es1-app-alb.chpcyberp1prd01.aws.prod.au.internal.cba"
+          else
+            echo "Invalid environment"
+            exit 1
+          fi
+
+          if [[ ! -d "${environment}" ]]; then
+            echo "Directory ${environment} does not exist."
+            if [[ $environment != "dev" ]]; then
+              echo "::warning title=Missing environment folder::${environment} directory is missing."
+            fi
+            exit 0 # Exit gracefully if the directory does not exist
+          fi
+
+          drift=0
+          for zone_name in `ls ${environment}/`
+          do
+            echo "===zone name: $zone_name==="
+            if [[ "$zone_name" != "README.md" ]] && [[ "$zone_name" != "${environment}.poc.com.au" ]]; then
+              # Generate ID token
+              echo "Generating ID token..."
+              id_token=$(curl -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://DHPRunnerAPI" | jq -r '.value')
+              
+              # Invoke DHP Api for cf-terraforming
+              echo "Calling cf-terraforming endpoint..."
+              response_status_code=$(curl -X GET "$ESM_RUNNER_ENDPOINT/runner/cf-terraforming/${environment}?fqdn=${zone_name}&resource_type=${resource_type}" -H 'accept: application/json' -H 'Content-Type: application/json' -H "X-Github-Auth-Header: Bearer $id_token" -s -o output.json -D header.txt -w "%{http_code}")
+
+              if [[ "${response_status_code}" != "200" ]]; then
+                echo "Error in executing cf-terraforming for zone ${zone_name} and resource type ${resource_type}"
+                json_response_detail=`cat output.json | jq -r '.detail'`
+                echo "$json_response_detail"
+                drift=2 # API error
+                continue
+              fi
+
+              # Print the output
+              echo "Successfully got a response from cf-terraforming"
+              json_response_detail=`cat output.json`
+              resource_types=`jq -r 'keys[]' output.json`
+              echo "Iterating resource types ${resource_types}"
+
+              for resource in $resource_types
+              do
+                echo "===Output for resource ${resource}==="
+                echo "**All Resources Found in Cloudflare**"
+                echo "$json_response_detail" | jq -r --arg key "$resource" '.[$key].import_output'
+
+                echo "**Check if there are new resources**"
+                new_resources_count=$(echo "$json_response_detail" | jq -r --arg key "$resource" '.[$key].new_resources | length')
+                if [ "$new_resources_count" -eq 0 ]; then
+                    echo "No new resources found!"
+                else
+                  echo "New resources found..."
+                  echo "Resource IDs of the new resources:"
+                  echo "$json_response_detail" | jq -r --arg key "$resource" '.[$key].new_resources'
+                  echo "**Generation report**"
+                  echo "Terraform code for all resources can be found below. Use the above resource IDs to find the new resources to import"
+                  echo "$json_response_detail" | jq -r --arg key "$resource" '.[$key].generate_output'
+                  drift=1  # detect drift
+                fi
+              done
+
+              # Print the header
+              echo "============"
+              echo "===Header==="
+              echo "============"
+              cat header.txt
+            fi
+          done
+
+          if [[ $drift -ne 0 ]]; then
+            echo "Drift error code: $drift"
+            exit 1 # This is to trigger email
+          fi
