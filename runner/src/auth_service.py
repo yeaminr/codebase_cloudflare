@@ -1,5 +1,11 @@
+"""
+Module provides functions to verify JWT tokens
+and validate repository actions against Cloudflare zones.
+"""
+
 from datetime import datetime, timedelta
 import logging
+import base64
 import requests
 import jwt
 import yaml
@@ -9,7 +15,7 @@ from runner.src import api_constant
 from runner.src import exceptions
 from runner.src.jwt_token_info import JWTTokenInfo
 from runner.src import github_service
-from runner.src import working_dir as wd
+from runner.src.model import InputModel
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +70,9 @@ def verify_token(req: Request) -> JWTTokenInfo:
         )
     jwt_token_full = req.headers[api_constant.AUTH_HEADER]
     if not jwt_token_full.startswith(api_constant.AUTH_TOKEN_PREFIX):
-        logger.info("Received JWT: %s", jwt_token_full)
+        logger.info(
+            "Received JWT: %s", base64.b64encode(jwt_token_full.encode("UTF-8"))
+        )
         raise HTTPException(status_code=401, detail="Not a bearer token")
     jwt_token = jwt_token_full[len(api_constant.AUTH_TOKEN_PREFIX) :]
     try:
@@ -111,77 +119,93 @@ def verify_token(req: Request) -> JWTTokenInfo:
     return jwt_token
 
 
-def is_requesting_repo_authorized_to_action_on_cf_zone(cf_zone_name, working_dir):
+def is_requesting_repo_authorized_to_action_on_cf_zone(
+    environment: str, cf_zone_name: str, data: dict
+):
     """
-    This function comapres the CF zone name 
-    with the zone names in the tenant_onboarding_settings.yml file 
+    This function comapres the CF zone name
+    with the zone names in the tenant_onboarding_settings.yml file
     of the selfservice repo.
 
     Args:
+        environment (str): environment where change is being requested
         cf_zone_name (str): zone name where tenant is requesting changes
         working_dir (str): path to dir containing the YAML selfservice file
 
     Returns:
         return_type: boolean
     """
+    onboarding_yaml = api_constant.TENANT_ONBOARDING_YAML
 
-    with open(f"{working_dir}/{api_constant.TENANT_ONBOARDING_YAML}", "r") as f:
-        data = yaml.safe_load(f)
-        if (not data['dev_fqdns']):
-            data['dev_fqdns'] = []
-        if (not data['tst_fqdns']):
-            data['tst_fqdns'] = []
-        if (not data['stg_fqdns']):
-            data['stg_fqdns'] = []
+    allowed_fqdns = data.get(f"{environment}_fqdns", [])
+    logger.info("List of allowed FQDNs for requesting tenant: %s", allowed_fqdns)
+    if cf_zone_name in allowed_fqdns:
+        logger.info("CF zone name %s exists in %s", cf_zone_name, onboarding_yaml)
+        return True
 
-        allowed_fqdns = data["dev_fqdns"] + data["tst_fqdns"] + data["stg_fqdns"] + data["prd_fqdns"]
-        if (cf_zone_name in allowed_fqdns):
-            logger.info (f"CF zone name {cf_zone_name} exists in {api_constant.TENANT_ONBOARDING_YAML}")
-            return True
-
-        logger.info (f"CF zone name {cf_zone_name} doesn't exist in {api_constant.TENANT_ONBOARDING_YAML}")
-        return False
+    logger.info("CF zone name %s doesn't exist in %s", cf_zone_name, onboarding_yaml)
+    return False
 
 
-def fetch_selfservice_repo_tenants(tenant_repo_name) -> str|None:
+def fetch_selfservice_repo_tenants(tenant_repo_name) -> dict | None:
     """
-    This function fetches the tenant_onboarding_settings.yml file from 
+    This function fetches the tenant_onboarding_settings.yml file from
     the corresponding tenant directory of the selfservice repo.
 
     Args:
         tenant_repo_name (str): name of the tenants github repo
 
     Returns:
-        str | None: name of working dir containing the self service YAML settings file
+        dict | None: contents  of the tenant_onboarding_settings.yml file or None if not found
     """
 
-    cwd = wd.create_dir()
-    if cwd is None:
-        logger.error ("Failed to create working directory")
+    # get tenant name by parsing repo name
+    tenant_repo_prefix = api_constant.TENANT_REPO_PREFIX
+    if tenant_repo_prefix not in tenant_repo_name:
+        logger.error(
+            "Invalid tenant repo name %s, must be prefixed with %s",
+            tenant_repo_name,
+            tenant_repo_prefix,
+        )
         return None
-    logger.info(f"Working directory: {cwd}")
 
-    # get tenant name by excluding the first common part of the repo name e.g. first 29 chars of 'groupsec-edgesecurity-tenant-commsec-private'
-    tenant_repo_prefix_len = len(api_constant.TENANT_REPO_PREFIX)
-    dirname = tenant_repo_name[tenant_repo_prefix_len:]
+    # extract tenant name from repo name
+    tenant_name = tenant_repo_name[len(tenant_repo_prefix) :]
 
     selfservice_repo_name = api_constant.SELFSERVICE_REPO_NAME
-    repo_path = f"tenants/{dirname}/{api_constant.TENANT_ONBOARDING_YAML}"
+    repo_path = f"tenants/{tenant_name}/{api_constant.TENANT_ONBOARDING_YAML}"
     repo_ref = "main"
-    download_url = github_service.get_download_url(selfservice_repo_name, repo_path, repo_ref)
-    logger.info(f"Download URL: {download_url}")
+    download_url = github_service.get_download_url(
+        selfservice_repo_name, repo_path, repo_ref
+    )
+    logger.info("Download URL: %s", download_url)
 
     try:
-        github_service.get_file_content(download_url, cwd)
-        logger.info(f"Directory {dirname} exists in selfservice repo. Downloaded tenant_onboarding_settings.yml file")
-        return cwd
-    except Exception as e:
-        logger.error(f"Error in fetching tenant_onboarding_settings.yml file: {e}")
-        wd.delete_dir(cwd)
+        file_content_stream = github_service.get_file_content(download_url)
+        file_content = yaml.safe_load(file_content_stream)
+        logger.info("Directory %s exists in selfservice repo", tenant_name)
+        return file_content
+    except exceptions.GithubServiceFileFetchException as e:
+        # file not found
+        logger.error("Error in fetching tenant_onboarding_settings.yml file: %s", e)
         return None
 
 
-def verify_repo_action(tenant_repo_name: str, cf_zone_name: str) -> bool:
+def verify_token_repo_action(jwt_token_info: JWTTokenInfo) -> bool:
+    """
+    Check if the requesting repo is authorized to perform actions on the token endpoints
+    """
+    repo_name = jwt_token_info.repo_name
+    if repo_name not in api_constant.AUTHORIZED_TOKEN_REPOS:
+        return False
+    return True
+
+
+
+def verify_repo_action(
+    jwt_token_info: JWTTokenInfo,
+    input_model: InputModel,
+) -> bool:
     """
     This function verifies if the requesting repo is authorized to action on the CF zone.
 
@@ -192,15 +216,53 @@ def verify_repo_action(tenant_repo_name: str, cf_zone_name: str) -> bool:
     Returns:
         boolean: if tenant is authorised to perform changes on the zone
     """
-    working_dir = fetch_selfservice_repo_tenants(tenant_repo_name)
-    if working_dir is None:
+    environment = input_model.environment
+    cf_zone_name = input_model.fqdn
+    config_type = input_model.config_type
+    action = input_model.action
+    repo_name = jwt_token_info.repo_name
+    branch = jwt_token_info.branch_name
+    logger.info(
+        "Verifying tenant %s is authorized to update %s in %s",
+        repo_name,
+        cf_zone_name,
+        environment.value,
+    )
+    if action == "apply" and branch != api_constant.REPO_CONFIG_APPLY_BRANCH:
+        logger.error(
+            "Branch %s is NOT AUTHORIZED to perform %s actions", branch, action
+        )
+        return False
+    if config_type == "account":
+        if repo_name not in api_constant.AUTHORIZED_ACCOUNT_REPOS:
+            logger.error(
+                "Repo %s is NOT AUTHORIZED to perform %s actions on account config",
+                repo_name,
+                action,
+            )
+            return False
+        logger.info(
+            "Repo %s is AUTHORIZED to perform %s actions on account config",
+            repo_name,
+            action,
+        )
+        return True
+    try:
+        file_content = fetch_selfservice_repo_tenants(repo_name)
+    except Exception as e:
+        logger.error("Error in fetching selfservice repo tenants: %s", e)
+        raise HTTPException(
+            status_code=500, detail=f"500 Error: Error verifying repo: {e}"
+        ) from e
+    if file_content is None:
         logger.error("Tenant Directory doesn't exist in selfservice repo")
         return False
     try:
-        result = is_requesting_repo_authorized_to_action_on_cf_zone(cf_zone_name, working_dir)
-        wd.delete_dir(working_dir)
+        return is_requesting_repo_authorized_to_action_on_cf_zone(
+            environment.value, cf_zone_name, file_content
+        )
     except Exception as e:
-        logger.error(f"Error in verifying the repo action: {e}")
-        wd.delete_dir(working_dir)
-
-    return result
+        logger.error("Error in verifying the repo action: %s", e)
+        raise HTTPException(
+            status_code=500, detail=f"500 Error: Error verifying repo: {e}"
+        ) from e
